@@ -1,0 +1,894 @@
+---
+title: "Comparison of columnar cell types"
+author: "Karol Nowicki-Osuch"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: paper
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read in the data
+
+```{r libraries, message=FALSE}
+library(scran)
+library(colorBlindness)
+library(ggplot2)
+library(SingleR)
+library(Rcpp)
+library(RcppEigen)
+library(ggsci)
+library(scibet)
+library(tidyverse)
+# library(scater)
+# library(DropletUtils)
+library(openxlsx)
+# library(Rtsne)
+# library(umap)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+# library(pheatmap)
+# library(Seurat)
+source("~/Dropbox/Postdoc/git/Gastric_IM//Analysis/Functions/auxiliary.R")
+library(scater)
+library(TSCAN)
+# library(foreach)
+library(doParallel)
+library(MuSiC)
+
+```
+
+```{r}
+colour.palet <- c("NE" = "#990F0F", 
+                  "NSCJ" = "#CC5151",
+                  "SMG" = "#FFB2B2",
+                  "GM" = "#E5B17E",
+                  "BE" = "#99540F",
+                  "BSCJ" = "#CC8E51",
+                  "NG" = "#6B990F",
+                  "NGB" = "#A3CC51",
+                  "NAG" = "#0F6B99",
+                  "CAG" = "#2C85B2",
+                  "GIM" = "#51A3CC",
+                  "CIM" = "#7EC3E5",
+                  "ND" = "#260F99",
+                  "Ileum" = "#422CB2",
+                  "Colon" = "#6551CC",
+                  "Rectum" = "#8F7EE5")
+# colour.palet <- c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))[1:length(unique(sce$Tissue))]
+# names(colour.palet) <- sort(unique(sce$Tissue))
+cell.order<-c(colorBlindness::SteppedSequential5Steps[6:10],rev(RColorBrewer::brewer.pal(n = 8,name = "Reds")) ,colorBlindness::SteppedSequential5Steps[c(11:13,15, 16,18, 21:25)], "grey60")
+
+names(cell.order)<-c(
+  "Superficial", 
+  "Intermediate",    
+  "Suprabasal",
+  "Basal",
+  "SMG",
+  
+  "Foveolar_Differentiated",
+  "Foveolar_Intermediate",
+  "Neck-Cells",
+  "Chief",        
+  "Parietal",
+  "Enteroendocrine_CHGA",
+  "Enteroendocrine_GHRL", 
+  "Enteroendocrine_GAST",
+  
+  
+  
+  "Enterocytes",
+  "Enterocytes_Intermediate",
+  "Intestinal_Undifferentiated",
+  "Goblet",
+  
+  "Fibroblasts",
+  "Endothelial",
+  
+  "B-Cells",
+  "T-Cells",
+  "Plasma-Cells",
+  "Macrophages",
+  "Mast",
+  
+  "Erythrocyte"
+)
+```
+
+## Plot the clustering of the columnar cells
+
+```{r}
+
+sce.columnar <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Columnar.rds")
+# columnar.weight<-estimated.weights.no.intermediate[match(paste(sce.columnar$Sample, sce.columnar$Barcode),paste(sce$Sample, sce$Barcode)),]
+
+umap.data<-reducedDims(sce.columnar)$umap_MinDist_0.2_N_Neighbors_15 
+
+
+for.printing <- data.frame(UMAP1 = umap.data[,1],
+                           UMAP2 = umap.data[,2],
+                           Tissue = factor(sce.columnar$Tissue, levels = names(colour.palet)),
+                           Cluster = as.factor(sce.columnar$Columnar_clusters),
+                           # Patient = as.factor(sce$Patient),
+                           # Study = as.factor(sce$Study),
+                           # Time = as.factor(sce$Time),
+                           CellType = factor(sce.columnar$Celltypes_global, levels = names(cell.order)),
+                           # MUC5AC = logcounts(sce)[rowData(sce)$Symbol == "MUC5AC",],
+                           # FABP1 = logcounts(sce)[rowData(sce)$Symbol == "FABP1",]
+                           # Tissuetype = as.factor(sce$Tissuetypes_global),
+                           Patientstatus = as.factor(sce.columnar$Patient_status)
+                           # Combined = as.factor(paste(colData(sce)$Study, colData(sce)$Patient_type)),
+                           # Combined2 = as.factor(paste(colData(sce)$Study, colData(sce)$Patient_status)),
+                           # Combined3 = as.factor(paste(colData(sce)$Patient, sce$Time))
+)
+
+i <- c("GM")
+ii <- "Esophagus"
+for.printing.tmp<-for.printing[c(which(!(for.printing$Tissue %in% i)),which(for.printing$Tissue %in% i)), ]  
+for.printing.tmp$Alpha <- ifelse(for.printing.tmp$Tissue %in% i, ii, "other")
+
+# Visualize Esophageal tissues
+
+GM.tissues <- ggplot(data = for.printing.tmp) +
+  geom_point(aes(UMAP1, UMAP2, alpha = Alpha), size = 1, color = "black", alpha = ifelse(for.printing.tmp$Tissue %in% i,1,0.01))+
+  
+  
+  # c(rep(0.01, times = sum(!(for.printing.tmp$Tissue %in% i))), rep(1, times = sum(for.printing.tmp$Tissue %in% i)))) +
+  geom_point(aes(UMAP1, UMAP2, colour = CellType, alpha = Alpha), size = 0.5) +
+  scale_color_manual(values = cell.order) + 
+  scale_alpha_manual(values = c(ii = 1 , "other" = 0.00)) +
+  ggtitle("GM")+ 
+  theme_void() +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max)
+plot(GM.tissues)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/GM_tissue.tiff", GM.tissues, device = "tiff", units="in", width=8, height=6)
+
+i <- c("CAG", "NAG")
+ii <- "Stomach"
+for.printing.tmp<-for.printing[c(which(!(for.printing$Tissue %in% i)),which(for.printing$Tissue %in% i)), ]  
+for.printing.tmp$Alpha <- ifelse(for.printing.tmp$Tissue %in% i, ii, "other")
+
+# Visualize Esophageal tissues
+
+AG.tissues <- ggplot(data = for.printing.tmp) +
+  geom_point(aes(UMAP1, UMAP2, alpha = Alpha), size = 1, color = "black", alpha = ifelse(for.printing.tmp$Tissue %in% i,1,0.01))+
+  
+  
+  # c(rep(0.01, times = sum(!(for.printing.tmp$Tissue %in% i))), rep(1, times = sum(for.printing.tmp$Tissue %in% i)))) +
+  geom_point(aes(UMAP1, UMAP2, colour = CellType, alpha = Alpha), size = 0.5) +
+  scale_color_manual(values = cell.order) + 
+  scale_alpha_manual(values = c(ii = 1 , "other" = 0.00)) +
+  ggtitle("AG")+ 
+  theme_void() +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max)
+plot(AG.tissues)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/AG_tissue.tiff", AG.tissues, device = "tiff", units="in", width=8, height=6)
+
+
+i <- c("NG", "NGB", "NSCJ")
+ii <- "Stomach"
+for.printing.tmp<-for.printing[c(which(!(for.printing$Tissue %in% i & for.printing$Patientstatus == "Healthy")),which(for.printing$Tissue %in% i & for.printing$Patientstatus == "Healthy")), ]  
+for.printing.tmp$Alpha <- ifelse(for.printing.tmp$Tissue %in% i, ii, "other")
+
+# Visualize Esophageal tissues
+
+Normal.tissues <- ggplot(data = for.printing.tmp) +
+  geom_point(aes(UMAP1, UMAP2, alpha = Alpha), size = 1, color = "black", alpha = ifelse(for.printing.tmp$Tissue %in% i,1,0.01))+
+  
+  
+  # c(rep(0.01, times = sum(!(for.printing.tmp$Tissue %in% i))), rep(1, times = sum(for.printing.tmp$Tissue %in% i)))) +
+  geom_point(aes(UMAP1, UMAP2, colour = CellType, alpha = Alpha), size = 0.5) +
+  scale_color_manual(values = cell.order) + 
+  scale_alpha_manual(values = c(ii = 1 , "other" = 0.00)) +
+  ggtitle("Normal")+ 
+  theme_void() +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max)
+plot(Normal.tissues)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Normal_tissue_only_healthy_patients.tiff", Normal.tissues, device = "tiff", units="in", width=8, height=6)
+
+
+
+# Visualise Clusters
+Cluster.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                Cluster = factor(sce.columnar$Columnar_clusters))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cluster), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=2, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce.columnar$Columnar_clusters), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cluster.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Allumap_Clusters.tiff", Cluster.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Allumap_Clusters.pdf", Cluster.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+
+i <- c("6", "16")
+ii <- "Neck-Cells"
+for.printing.tmp<-for.printing[c(which(!(for.printing$Cluster %in% i & for.printing$CellType %in% ii)),which(for.printing$Cluster %in% i & for.printing$CellType %in% ii)), ]  
+for.printing.tmp$Alpha <- ifelse(for.printing.tmp$Cluster %in% i & for.printing.tmp$CellType %in% ii, ii, "other")
+
+# Visualize Esophageal tissues
+
+Clusters.umap <- ggplot(data = for.printing.tmp) +
+  geom_point(aes(UMAP1, UMAP2, alpha = Alpha), size = 1, color = "black", alpha = ifelse(for.printing.tmp$Cluster %in% i & for.printing.tmp$CellType %in% ii,1,0.01))+
+  
+  
+  # c(rep(0.01, times = sum(!(for.printing.tmp$Tissue %in% i))), rep(1, times = sum(for.printing.tmp$Tissue %in% i)))) +
+  geom_point(aes(UMAP1, UMAP2, colour = Cluster, alpha = Alpha), size = 0.5) +
+  # scale_color_manual(values = cell.order) + 
+  scale_alpha_manual(values = c(ii = 1 , "other" = 0.00)) +
+  ggtitle("Cluster 6 and 16")+ 
+  theme_void() +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max)
+plot(Clusters.umap)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Umap_cluster616.tiff", Clusters.umap, device = "tiff", units="in", width=8, height=6)
+
+
+```
+
+## stacked barchart of clusters 16 and 6
+
+```{r}
+countsdata<-reshape2::melt(table(sce.columnar$Columnar_clusters[sce.columnar$Celltypes_global == "Neck-Cells"], sce.columnar$Tissue[sce.columnar$Celltypes_global == "Neck-Cells"]))
+colnames(countsdata)<-c("Cluster", "Tissue", "Proportion")
+countsdata<-countsdata[countsdata$Cluster %in% c(6,16) & countsdata$Tissue %in% c("NSCJ", "NG", "NGB", "GM", "NAG", "CAG"),]
+countsdata$Cluster<-as.factor(countsdata$Cluster)
+countsdata$Tissue <- factor(countsdata$Tissue, levels = c("NSCJ", "NG", "NGB", "GM", "NAG", "CAG"))
+# countsdata<-countsdata[!(countsdata$Tissue %in%   c("NE")),]
+
+
+
+boxplot.celltypes<-ggplot(data = countsdata, aes(x = Cluster, y = Proportion, fill = Tissue)) + geom_bar(position = "fill", stat = "identity") +   scale_fill_manual(values = colour.palet) + theme_cowplot(12)
+plot(boxplot.celltypes)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Boxplot.celltypes.pdf", boxplot.celltypes, device = "pdf", units="in", width=5, height=7.5, useDingbats = FALSE)
+
+
+countsdata<-reshape2::melt(table(sce.columnar$Columnar_clusters[sce.columnar$Celltypes_global == "Neck-Cells"], paste(sce.columnar$Tissue, sce.columnar$Patient_type)[sce.columnar$Celltypes_global == "Neck-Cells"]))
+colnames(countsdata)<-c("Cluster", "Tissue", "Proportion")
+countsdata<-countsdata[countsdata$Cluster %in% c(6,16) & countsdata$Tissue %in% c("NSCJ Healthy", "NGB Healthy", "NG Healthy", "NG Diseased", "GM Diseased", "NAG Diseased", "CAG Diseased"),]
+countsdata$Cluster<-as.factor(countsdata$Cluster)
+countsdata$Tissue <- factor(countsdata$Tissue, levels = c("NSCJ Healthy", "NGB Healthy", "NG Healthy", "NG Diseased", "GM Diseased", "NAG Diseased", "CAG Diseased"))
+
+
+boxplot.celltypes<-ggplot(data = countsdata, aes(x = Tissue, y = Proportion, fill = Cluster)) + geom_bar(position = "fill", stat = "identity")  + theme_cowplot(12)
+plot(boxplot.celltypes)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Boxplot.lusters.pdf", boxplot.celltypes, device = "pdf", units="in", width=7.5, height=5, useDingbats = FALSE)
+
+```
+
+## Comparison of both tissue vs normal
+
+Here I am comparing disease cells in cluster 16 with cells normal cells in cluster 6. Please note that a small number of cells from normal samples are in cluster 16 and some cells of cluster 6 are also from the diseases state. These are now ignored in the analysis 
+
+```{r}
+for.venn <- list("Both" = NULL,
+                 "AG" = NULL,
+                 "GM" = NULL
+                 )
+# DE between clusters 6 and 16 of Neck-like cells
+# sce_test <- sce.columnar[,sce.columnar$Celltypes_global == "Neck-Cells" & 
+#                            sce.columnar$Columnar_clusters %in% c(6,16) & 
+#                            sce.columnar$Tissue %in% c("NG", "NGB", "NSCJ", "GM", "NAG", "CAG")
+#                          ]
+# DE between clusters 6 and 16 of Neck-like cells keep only disease cells for cluster 16 and healthy for cluster 6
+sce_test <- sce.columnar[,sce.columnar$Celltypes_global == "Neck-Cells" & 
+                           (
+                             sce.columnar$Columnar_clusters %in% c(6) & sce.columnar$Tissue %in% c("NG", "NGB", "NSCJ") |
+                               sce.columnar$Columnar_clusters %in% c(16) & sce.columnar$Tissue %in% c( "GM", "NAG", "CAG")
+                           )
+]
+
+
+# Keep patient samples cells with at least 10 cells in the given claster
+counts<-table(paste(sce_test$Sample, sce_test$Columnar_clusters, sep = " "))
+to.keep<-names(counts[counts>=10])
+sce_test <- sce_test[,paste(sce_test$Sample, sce_test$Columnar_clusters, sep = " ") %in% to.keep]
+sce_test$Columnar_clusters<-paste0("Cluster",sce_test$Columnar_clusters)
+
+# We set the FDR to 1 to retain all genes
+Diff_6vs16 <- DE.edgeR(sce_test, conditions = sce_test$Columnar_clusters,
+                       covariate = sce_test$Sample, lfc = 0.5,
+                       FDR = 1)
+Diff_6vs16.out <- rbind(Diff_6vs16$Cluster6,
+                        Diff_6vs16$Cluster16[
+                          seq(nrow(Diff_6vs16$Cluster16), 1),])
+
+Diff_6vs16.out$ID <- rownames(Diff_6vs16.out)
+
+Diff_6vs16.out$specificity <- NA
+Diff_6vs16.out$specificity[Diff_6vs16.out$logFC < 0 & Diff_6vs16.out$FDR <= 0.1] <- "Cluster6"
+Diff_6vs16.out$specificity[Diff_6vs16.out$logFC > 0 & Diff_6vs16.out$FDR <= 0.1] <- "Cluster16"
+for.venn$Both <- Diff_6vs16.out$Genename[Diff_6vs16.out$logFC > 0 & Diff_6vs16.out$FDR <= 0.1]
+
+# View(Diff_6vs16.out)
+write.xlsx(Diff_6vs16.out, file = "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Table_S2_cluster16vs6.xlsx")
+
+genes<-Diff_6vs16.out[Diff_6vs16.out$logFC > 0 & Diff_6vs16.out$FDR <= 0.1,]
+genes<-genes$ID[rev(order(genes$logCPM))][1:20]
+breaksList = seq(0, 15, by = 1)
+
+for.heatmap <- logcounts(sce_test)[match(genes, rowData(sce_test)$ID),]
+colnames(for.heatmap) <- paste(sce_test$Sample, sce_test$Barcode, sep = "_")
+rownames(for.heatmap) <- rowData(sce_test)[rownames(for.heatmap),2]
+col.annotation<-as.data.frame(colData(sce_test)[,c(4,27)])
+rownames(col.annotation) <- paste(sce_test$Sample, sce_test$Barcode, sep = "_")
+
+breaksList = seq(0, 2, by = 0.01)
+
+pheatmap::pheatmap(for.heatmap, 
+                   cluster_rows = FALSE, 
+                   cluster_cols = TRUE, 
+                   scale = "none", 
+                   clustering_method = "ward.D2", 
+                   color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(length(breaksList)),
+                   breaks = breaksList,
+                   annotation_col = col.annotation,
+                   show_colnames = FALSE)
+
+
+#Get the expression values
+
+meanexpression <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), mean, drop = FALSE)
+
+
+
+meanexpression <- reshape2::melt(meanexpression)
+colnames(meanexpression) <- c("Tissue", "gene", "mean_expression")
+
+# propnozero <- function(x) {
+#   length(x[x>0])/length(x)
+# }
+nonzeroexpression.count <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), function(x) {
+  length(x[x>0])
+}, drop = FALSE)
+nonzeroexpression.tissuecount <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), length, drop = FALSE)
+nonzeroexpression<-cbind(nonzeroexpression.count[,1],nonzeroexpression.count[,c(2:ncol(nonzeroexpression.count))]/ nonzeroexpression.tissuecount[match(nonzeroexpression.count$Group.1, nonzeroexpression.tissuecount$Group.1),2:ncol(nonzeroexpression.tissuecount)])
+# nonzeroexpression <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Columnar_clusters, sce_test$Tissue), propnozero)
+nonzeroexpression <- reshape2::melt(nonzeroexpression)
+colnames(nonzeroexpression) <- c("Tissue", "gene", "Proportion")
+
+expression.df <- merge(meanexpression, nonzeroexpression )
+expression.df$gene <- rowData(sce_test)$Symbol[match (expression.df$gene, rowData(sce_test)$ID)]
+# expression.df$Cell_type <- factor(expression.df$Cell_type, levels = c("Immune", "Stromal", "Basal", "Suprabasal", "Intermediate", "Superficial", "Undifferentiated","Foveolar_Intermediate", "Foveolar_differentiated", "Endocrine", "Novel"  ))
+expression.df$gene <- factor(expression.df$gene, levels = rev(rowData(sce_test)[genes,"Symbol"]))
+
+# expression.df$Tissue_type <- NA
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Immune", "Stromal")] <- "Nonepithelial"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Basal", "Suprabasal", "Intermediate", "Superficial")] <- "Oesophageal"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Undifferentiated","Foveolar_Intermediate", "Foveolar_differentiated", "Endocrine")] <- "Gastric"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Novel")] <- "Novel"
+expression.df$mean_expression2 <- ifelse(expression.df$mean_expression >.5, yes = .5, no = expression.df$mean_expression )
+# expression.df$Combined <- paste(expression.df$Tissue, expression.df$Cluster)
+
+for(n in colnames(expression.df)) {
+  expression.df[is.na(expression.df[,n]),n]<-0
+}
+
+expression.plot <- ggplot(expression.df) + 
+  geom_point(aes(y = gene, x = Tissue, size = Proportion, colour = mean_expression)) + 
+  theme_bw() + 
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black")) +  
+  scale_size_continuous(limits=c(0, 1), breaks = c(0,.25,.5,.75,1)) +
+  scale_color_viridis(option = "A", limits = c(0,3), oob = scales::squish, labels = c(0,1,2,">=3"))+
+  # scale_color_manual(values = c("#4DBBD5FF", "grey40", "orange", "darkred" ))+
+  theme(axis.text.x=element_text(angle = 45, vjust = 1, hjust = 1))
+
+
+print(expression.plot)
+
+
+
+```
+
+
+
+## Comparison of AG only vs normal
+
+Here I am comparing disease cells in cluster 16 with cells normal cells in cluster 6. Please note that a small number of cells from normal samples are in cluster 16 and some cells of cluster 6 are also from the diseases state. These are now ignored in the analysis. I am only keeping the AG samples for the diseases state. 
+
+```{r}
+# DE between clusters 6 and 16 of Neck-like cells
+# sce_test <- sce.columnar[,sce.columnar$Celltypes_global == "Neck-Cells" & 
+#                            sce.columnar$Columnar_clusters %in% c(6,16) & 
+#                            sce.columnar$Tissue %in% c("NG", "NGB", "NSCJ", "GM", "NAG", "CAG")
+#                          ]
+# DE between clusters 6 and 16 of Neck-like cells keep only disease cells for cluster 16 and healthy for cluster 6
+sce_test <- sce.columnar[,sce.columnar$Celltypes_global == "Neck-Cells" & 
+                           (
+                             sce.columnar$Columnar_clusters %in% c(6) & sce.columnar$Tissue %in% c("NG", "NGB", "NSCJ") |
+                               sce.columnar$Columnar_clusters %in% c(16) & sce.columnar$Tissue %in% c("NAG", "CAG")
+                           )
+]
+
+
+# Keep patient samples cells with at least 10 cells in the given claster
+counts<-table(paste(sce_test$Sample, sce_test$Columnar_clusters, sep = " "))
+to.keep<-names(counts[counts>=10])
+sce_test <- sce_test[,paste(sce_test$Sample, sce_test$Columnar_clusters, sep = " ") %in% to.keep]
+sce_test$Columnar_clusters<-paste0("Cluster",sce_test$Columnar_clusters)
+
+# We set the FDR to 1 to retain all genes
+Diff_6vs16 <- DE.edgeR(sce_test, conditions = sce_test$Columnar_clusters,
+                       covariate = sce_test$Sample, lfc = 0.5,
+                       FDR = 1)
+Diff_6vs16.out <- rbind(Diff_6vs16$Cluster6,
+                        Diff_6vs16$Cluster16[
+                          seq(nrow(Diff_6vs16$Cluster16), 1),])
+
+Diff_6vs16.out$ID <- rownames(Diff_6vs16.out)
+
+Diff_6vs16.out$specificity <- NA
+Diff_6vs16.out$specificity[Diff_6vs16.out$logFC < 0 & Diff_6vs16.out$FDR <= 0.1] <- "Cluster6"
+Diff_6vs16.out$specificity[Diff_6vs16.out$logFC > 0 & Diff_6vs16.out$FDR <= 0.1] <- "Cluster16"
+for.venn$AG <- Diff_6vs16.out$Genename[Diff_6vs16.out$logFC > 1 & Diff_6vs16.out$FDR <= 0.1]
+AG.diff <- Diff_6vs16.out
+# View(Diff_6vs16.out)
+write.xlsx(Diff_6vs16.out, file = "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Table_S2_cluster16vs6_AG_only.xlsx")
+
+genes<-Diff_6vs16.out[Diff_6vs16.out$logFC > 0 & Diff_6vs16.out$FDR <= 0.1,]
+genes<-genes$ID[rev(order(genes$logCPM))][1:20]
+breaksList = seq(0, 15, by = 1)
+
+for.heatmap <- logcounts(sce_test)[match(genes, rowData(sce_test)$ID),]
+colnames(for.heatmap) <- paste(sce_test$Sample, sce_test$Barcode, sep = "_")
+rownames(for.heatmap) <- rowData(sce_test)[rownames(for.heatmap),2]
+col.annotation<-as.data.frame(colData(sce_test)[,c(4,27)])
+rownames(col.annotation) <- paste(sce_test$Sample, sce_test$Barcode, sep = "_")
+
+breaksList = seq(0, 2, by = 0.01)
+
+pheatmap::pheatmap(for.heatmap, 
+                   cluster_rows = FALSE, 
+                   cluster_cols = TRUE, 
+                   scale = "none", 
+                   clustering_method = "ward.D2", 
+                   color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(length(breaksList)),
+                   breaks = breaksList,
+                   annotation_col = col.annotation,
+                   show_colnames = FALSE)
+
+
+#Get the expression values
+
+meanexpression <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), mean, drop = FALSE)
+
+
+
+meanexpression <- reshape2::melt(meanexpression)
+
+colnames(meanexpression) <- c("Tissue", "gene", "mean_expression")
+
+# propnozero <- function(x) {
+#   length(x[x>0])/length(x)
+# }
+nonzeroexpression.count <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), function(x) {
+  length(x[x>0])
+}, drop = FALSE)
+nonzeroexpression.tissuecount <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), length, drop = FALSE)
+nonzeroexpression<-cbind(nonzeroexpression.count[,1],nonzeroexpression.count[,c(2:ncol(nonzeroexpression.count))]/ nonzeroexpression.tissuecount[match(nonzeroexpression.count$Group.1, nonzeroexpression.tissuecount$Group.1),2:ncol(nonzeroexpression.tissuecount)])
+# nonzeroexpression <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Columnar_clusters, sce_test$Tissue), propnozero)
+nonzeroexpression <- reshape2::melt(nonzeroexpression)
+colnames(nonzeroexpression) <- c("Tissue", "gene", "Proportion")
+
+expression.df <- merge(meanexpression, nonzeroexpression )
+expression.df$gene <- rowData(sce_test)$Symbol[match (expression.df$gene, rowData(sce_test)$ID)]
+# expression.df$Cell_type <- factor(expression.df$Cell_type, levels = c("Immune", "Stromal", "Basal", "Suprabasal", "Intermediate", "Superficial", "Undifferentiated","Foveolar_Intermediate", "Foveolar_differentiated", "Endocrine", "Novel"  ))
+expression.df$gene <- factor(expression.df$gene, levels = rev(rowData(sce_test)[genes,"Symbol"]))
+
+# expression.df$Tissue_type <- NA
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Immune", "Stromal")] <- "Nonepithelial"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Basal", "Suprabasal", "Intermediate", "Superficial")] <- "Oesophageal"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Undifferentiated","Foveolar_Intermediate", "Foveolar_differentiated", "Endocrine")] <- "Gastric"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Novel")] <- "Novel"
+expression.df$mean_expression2 <- ifelse(expression.df$mean_expression >.5, yes = .5, no = expression.df$mean_expression )
+# expression.df$Combined <- paste(expression.df$Tissue, expression.df$Cluster)
+
+for(n in colnames(expression.df)) {
+  expression.df[is.na(expression.df[,n]),n]<-0
+}
+
+expression.plot <- ggplot(expression.df) + 
+  geom_point(aes(y = gene, x = Tissue, size = Proportion, colour = mean_expression)) + 
+  theme_bw() + 
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black")) +  
+  scale_size_continuous(limits=c(0, 1), breaks = c(0,.25,.5,.75,1)) +
+  scale_color_viridis(option = "A", limits = c(0,3), oob = scales::squish, labels = c(0,1,2,">=3"))+
+  # scale_color_manual(values = c("#4DBBD5FF", "grey40", "orange", "darkred" ))+
+  theme(axis.text.x=element_text(angle = 45, vjust = 1, hjust = 1))
+
+
+print(expression.plot)
+
+
+
+```
+
+
+
+
+## Comparison of GM only vs normal
+
+Here I am comparing disease cells in cluster 16 with cells normal cells in cluster 6. Please note that a small number of cells from normal samples are in cluster 16 and some cells of cluster 6 are also from the diseases state. These are now ignored in the analysis. I am only keeping the GM samples for the diseases state. 
+
+```{r}
+# DE between clusters 6 and 16 of Neck-like cells
+# sce_test <- sce.columnar[,sce.columnar$Celltypes_global == "Neck-Cells" & 
+#                            sce.columnar$Columnar_clusters %in% c(6,16) & 
+#                            sce.columnar$Tissue %in% c("NG", "NGB", "NSCJ", "GM", "NAG", "CAG")
+#                          ]
+# DE between clusters 6 and 16 of Neck-like cells keep only disease cells for cluster 16 and healthy for cluster 6
+sce_test <- sce.columnar[,sce.columnar$Celltypes_global == "Neck-Cells" & 
+                           (
+                             sce.columnar$Columnar_clusters %in% c(6) & sce.columnar$Tissue %in% c("NG", "NGB", "NSCJ") |
+                               sce.columnar$Columnar_clusters %in% c(16) & sce.columnar$Tissue %in% c("GM")
+                           )
+]
+
+
+# Keep patient samples cells with at least 10 cells in the given claster
+counts<-table(paste(sce_test$Sample, sce_test$Columnar_clusters, sep = " "))
+to.keep<-names(counts[counts>=10])
+sce_test <- sce_test[,paste(sce_test$Sample, sce_test$Columnar_clusters, sep = " ") %in% to.keep]
+sce_test$Columnar_clusters<-paste0("Cluster",sce_test$Columnar_clusters)
+
+# We set the FDR to 1 to retain all genes
+Diff_6vs16 <- DE.edgeR(sce_test, conditions = sce_test$Columnar_clusters,
+                       covariate = sce_test$Sample, lfc = 0.5,
+                       FDR = 1)
+Diff_6vs16.out <- rbind(Diff_6vs16$Cluster6,
+                        Diff_6vs16$Cluster16[
+                          seq(nrow(Diff_6vs16$Cluster16), 1),])
+
+Diff_6vs16.out$ID <- rownames(Diff_6vs16.out)
+
+Diff_6vs16.out$specificity <- NA
+Diff_6vs16.out$specificity[Diff_6vs16.out$logFC < 0 & Diff_6vs16.out$FDR <= 0.1] <- "Cluster6"
+Diff_6vs16.out$specificity[Diff_6vs16.out$logFC > 0 & Diff_6vs16.out$FDR <= 0.1] <- "Cluster16"
+for.venn$GM <- Diff_6vs16.out$Genename[Diff_6vs16.out$logFC > 1 & Diff_6vs16.out$PValue <= 0.05]
+GM.diff <- Diff_6vs16.out
+# View(Diff_6vs16.out)
+write.xlsx(Diff_6vs16.out, file = "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Table_S2_cluster16vs6_GM_only.xlsx")
+
+genes<-Diff_6vs16.out[Diff_6vs16.out$logFC > 0 & Diff_6vs16.out$FDR <= 0.1,]
+genes<-genes$ID[rev(order(genes$logCPM))][1:20]
+breaksList = seq(0, 15, by = 1)
+
+for.heatmap <- logcounts(sce_test)[match(genes, rowData(sce_test)$ID),]
+colnames(for.heatmap) <- paste(sce_test$Sample, sce_test$Barcode, sep = "_")
+rownames(for.heatmap) <- rowData(sce_test)[rownames(for.heatmap),2]
+col.annotation<-as.data.frame(colData(sce_test)[,c(4,27)])
+rownames(col.annotation) <- paste(sce_test$Sample, sce_test$Barcode, sep = "_")
+
+breaksList = seq(0, 2, by = 0.01)
+
+pheatmap::pheatmap(for.heatmap, 
+                   cluster_rows = FALSE, 
+                   cluster_cols = TRUE, 
+                   scale = "none", 
+                   clustering_method = "ward.D2", 
+                   color = colorRampPalette(rev(brewer.pal(n = 7, name = "RdYlBu")))(length(breaksList)),
+                   breaks = breaksList,
+                   annotation_col = col.annotation,
+                   show_colnames = FALSE)
+
+
+#Get the expression values
+
+meanexpression <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), mean, drop = FALSE)
+
+
+
+meanexpression <- reshape2::melt(meanexpression)
+
+colnames(meanexpression) <- c("Tissue", "gene", "mean_expression")
+
+# propnozero <- function(x) {
+#   length(x[x>0])/length(x)
+# }
+nonzeroexpression.count <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), function(x) {
+  length(x[x>0])
+}, drop = FALSE)
+nonzeroexpression.tissuecount <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Tissue), length, drop = FALSE)
+nonzeroexpression<-cbind(nonzeroexpression.count[,1],nonzeroexpression.count[,c(2:ncol(nonzeroexpression.count))]/ nonzeroexpression.tissuecount[match(nonzeroexpression.count$Group.1, nonzeroexpression.tissuecount$Group.1),2:ncol(nonzeroexpression.tissuecount)])
+# nonzeroexpression <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Columnar_clusters, sce_test$Tissue), propnozero)
+nonzeroexpression <- reshape2::melt(nonzeroexpression)
+colnames(nonzeroexpression) <- c("Tissue", "gene", "Proportion")
+
+expression.df <- merge(meanexpression, nonzeroexpression )
+expression.df$gene <- rowData(sce_test)$Symbol[match (expression.df$gene, rowData(sce_test)$ID)]
+# expression.df$Cell_type <- factor(expression.df$Cell_type, levels = c("Immune", "Stromal", "Basal", "Suprabasal", "Intermediate", "Superficial", "Undifferentiated","Foveolar_Intermediate", "Foveolar_differentiated", "Endocrine", "Novel"  ))
+expression.df$gene <- factor(expression.df$gene, levels = rev(rowData(sce_test)[genes,"Symbol"]))
+
+# expression.df$Tissue_type <- NA
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Immune", "Stromal")] <- "Nonepithelial"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Basal", "Suprabasal", "Intermediate", "Superficial")] <- "Oesophageal"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Undifferentiated","Foveolar_Intermediate", "Foveolar_differentiated", "Endocrine")] <- "Gastric"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Novel")] <- "Novel"
+expression.df$mean_expression2 <- ifelse(expression.df$mean_expression >.5, yes = .5, no = expression.df$mean_expression )
+# expression.df$Combined <- paste(expression.df$Tissue, expression.df$Cluster)
+
+for(n in colnames(expression.df)) {
+  expression.df[is.na(expression.df[,n]),n]<-0
+}
+
+expression.plot <- ggplot(expression.df) + 
+  geom_point(aes(y = gene, x = Tissue, size = Proportion, colour = mean_expression)) + 
+  theme_bw() + 
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black")) +  
+  scale_size_continuous(limits=c(0, 1), breaks = c(0,.25,.5,.75,1)) +
+  scale_color_viridis(option = "A", limits = c(0,.5), oob = scales::squish, breaks = c(0, 0.25, 0.5), labels = c(0,0.25,">=0.5"))+
+  # scale_color_manual(values = c("#4DBBD5FF", "grey40", "orange", "darkred" ))+
+  theme(axis.text.x=element_text(angle = 45, vjust = 1, hjust = 1))
+
+
+print(expression.plot)
+
+
+
+```
+
+
+# Venn diagram
+
+```{r}
+library("ggVennDiagram")
+ggVennDiagram(for.venn[2:3], label_alpha = 0.5, label = "count", show_intersect = TRUE) +
+  ggplot2::scale_fill_gradient(low="white",high = "red")
+
+library(eulerr)
+fit.venn <- euler(for.venn[2:3], shape = "ellipse")
+pdf("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/venn.pdf", useDingbats = FALSE)
+plot(euler(for.venn[2:3], shape = "ellipse"), quantities = TRUE,
+     fill = c("lightblue", "transparent"),
+     col = c("black", "red"),
+     lty = 1
+    )
+dev.off()
+sort(intersect(for.venn$AG, for.venn$GM))
+sort(setdiff(for.venn$AG, for.venn$GM))
+
+sort(setdiff(for.venn$GM, for.venn$AG))
+# View(AG.diff[ AG.diff$Genename %in% intersect(for.venn$AG, for.venn$GM),])
+# View(GM.diff[ GM.diff$Genename %in% intersect(for.venn$AG, for.venn$GM),])
+```
+
+# Figures
+
+```{r}
+#Get the expression values
+# DE between clusters 6 and 16 of Neck-like cells keep only disease cells for cluster 16 and healthy for cluster 6
+sce_test <- sce.columnar[,sce.columnar$Celltypes_global == "Neck-Cells" & 
+                           (
+                             sce.columnar$Columnar_clusters %in% c(6) & sce.columnar$Tissue %in% c("NG", "NGB", "NSCJ") |
+                               sce.columnar$Columnar_clusters %in% c(16) & sce.columnar$Tissue %in% c("NAG", "CAG", "GM")
+                           )
+]
+
+
+# Keep patient samples cells with at least 10 cells in the given claster
+sce_test$Columnar_clusters<-paste0("Cluster",sce_test$Columnar_clusters)
+sce_test$Tissue_state <- ifelse(sce_test$Tissue %in% c("NG", "NGB", "NSCJ"), "Normal", "Disease")
+
+#Get the expression values
+tmp.count.data <- AG.diff[ AG.diff$Genename %in% intersect(for.venn$AG, for.venn$GM),]
+
+genes <- tmp.count.data$Genename[order(tmp.count.data$logCPM, decreasing = TRUE)][1:25]
+
+meanexpression <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$Symbol %in% genes,]))), list(sce_test$Tissue), mean, drop = FALSE)
+
+
+
+meanexpression <- reshape2::melt(meanexpression)
+
+colnames(meanexpression) <- c("Tissue", "gene", "mean_expression")
+
+# propnozero <- function(x) {
+#   length(x[x>0])/length(x)
+# }
+nonzeroexpression.count <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$Symbol %in% genes,]))), list(sce_test$Tissue), function(x) {
+  length(x[x>0])
+}, drop = FALSE)
+nonzeroexpression.tissuecount <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$Symbol %in% genes,]))), list(sce_test$Tissue), length, drop = FALSE)
+nonzeroexpression<-cbind(nonzeroexpression.count[,1],nonzeroexpression.count[,c(2:ncol(nonzeroexpression.count))]/ nonzeroexpression.tissuecount[match(nonzeroexpression.count$Group.1, nonzeroexpression.tissuecount$Group.1),2:ncol(nonzeroexpression.tissuecount)])
+# nonzeroexpression <- aggregate(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$ID %in% genes,]))), list(sce_test$Columnar_clusters, sce_test$Tissue), propnozero)
+nonzeroexpression <- reshape2::melt(nonzeroexpression)
+colnames(nonzeroexpression) <- c("Tissue", "gene", "Proportion")
+
+expression.df <- merge(meanexpression, nonzeroexpression )
+expression.df$gene <- rowData(sce_test)$Symbol[match (expression.df$gene, rowData(sce_test)$ID)]
+# expression.df$Cell_type <- factor(expression.df$Cell_type, levels = c("Immune", "Stromal", "Basal", "Suprabasal", "Intermediate", "Superficial", "Undifferentiated","Foveolar_Intermediate", "Foveolar_differentiated", "Endocrine", "Novel"  ))
+expression.df$gene <- factor(expression.df$gene, levels = rev(genes))
+expression.df$Tissue <- factor(expression.df$Tissue, levels = c("NAG", "CAG", "GM", "NSCJ", "NG", "NGB"))
+# expression.df$Tissue_type <- NA
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Immune", "Stromal")] <- "Nonepithelial"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Basal", "Suprabasal", "Intermediate", "Superficial")] <- "Oesophageal"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Undifferentiated","Foveolar_Intermediate", "Foveolar_differentiated", "Endocrine")] <- "Gastric"
+# expression.df$Tissue_type[expression.df$Cell_type %in% c("Novel")] <- "Novel"
+expression.df$mean_expression2 <- ifelse(expression.df$mean_expression >.5, yes = .5, no = expression.df$mean_expression )
+# expression.df$Combined <- paste(expression.df$Tissue, expression.df$Cluster)
+
+for(n in colnames(expression.df)) {
+  expression.df[is.na(expression.df[,n]),n]<-0
+}
+
+expression.plot <- ggplot(expression.df) + 
+  geom_point(aes(y = gene, x = Tissue, size = Proportion, colour = mean_expression)) + 
+  theme_bw() + 
+  theme(panel.border = element_blank(), 
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        axis.line = element_line(colour = "black")) +  
+  scale_size_continuous(limits=c(0, 1), breaks = c(0,.25,.5,.75,1)) +
+  scale_color_viridis(option = "A", limits = c(0,3), oob = scales::squish, breaks = c(0, 1.5, 2.9), labels = c(0,1.5,">=3"), begin = .15, end = 1)+
+  # scale_color_manual(values = c("#4DBBD5FF", "grey40", "orange", "darkred" ))+
+  theme(axis.text.x=element_text(angle = 45, vjust = 1, hjust = 1))
+
+
+print(expression.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Combined_bubbleplot.pdf", expression.plot, device = "pdf", units="in", width=6, height=12, useDingbats = FALSE)
+
+
+
+
+
+```
+
+```{r}
+genes<-rev(c("LYZ", "TFF1", "TFF2", "AQP5", "CD44"))
+
+nexpression <- cbind(as.data.frame(t(as.matrix(logcounts(sce_test)[rowData(sce_test)$Symbol %in% genes,]))), sce_test$Tissue)
+
+colnames(nexpression) <- c(rowData(sce_test)$Symbol[match (colnames(nexpression)[1:ncol(nexpression)-1], rowData(sce_test)$ID)], "Tissue")
+
+df.violin <- reshape2::melt(nexpression, variable.name = "Gene", value.name = "Expression", id.vars = ncol(nexpression))
+# df.violin$Cell_type <- factor(df.violin$Cell_type, levels = rev(levels(df.violin$Cell_type)))
+df.violin$Gene <- factor(df.violin$Gene, levels = rev(genes))
+df.violin$Tissue <- factor(df.violin$Tissue, levels = c("NAG", "CAG", "GM", "NSCJ", "NG", "NGB"))
+
+set.seed(50014)
+subsampled <- sample(nrow(df.violin), size = ceiling(nrow(df.violin)/10), replace = FALSE)
+expression.plot_violin <- ggplot(df.violin, aes(x = Tissue, y = Expression, fill = Tissue)) + 
+  geom_violin(scale = "width", trim = TRUE, size = 0.1) + 
+  geom_jitter(data = df.violin[subsampled,], aes(x = Tissue, y = Expression), height = 0, width = 0.1, size = 0.001) +
+  facet_wrap(~ Gene, ncol = 1, scales = "free_y") + 
+  scale_fill_manual(values = colour.palet) +
+  theme_minimal() +
+  ylab("Log2(Expression)") + 
+  #coord_flip() +
+  scale_y_continuous(breaks = scales::pretty_breaks(4)) +
+  theme(legend.position = "none",
+        axis.text.x=element_text(angle = 45, vjust = 1, hjust = 1),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor = element_blank())
+
+expression.plot_violin
+
+
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/Selected_violin.pdf", expression.plot_violin, device = "pdf", units="in", width=6, height=12, useDingbats = FALSE)
+
+
+```
+
+## GSEA GM analysis
+
+Here I am using data from GSEA. 
+GSEA software version 4.1.0, C3 TF Database version 7.4
+
+
+
+```{r process, include=TRUE, echo=TRUE, warning=FALSE, eval=TRUE, message=FALSE, tidy=TRUE,fig.height= 14, fig.width= 10}
+#Read data
+GSEA.dir<-"/home/karolno/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/GSEA/Table3_GSEA_C3.GseaPreranked.1629748880021/"
+
+all.data<-read.delim(file= list.files(GSEA.dir, pattern = "gsea_report_for_na_pos.+tsv", full.names = TRUE))
+all.data<-rbind(all.data,read.delim(file= list.files(GSEA.dir, pattern = "gsea_report_for_na_neg.+tsv", full.names = TRUE)))
+
+
+all.data$test<-"Other"
+all.data$test[lapply(all.data$GS.br..follow.link.to.MSigDB, function(x) grep(pattern = "MYC", x))>0]<-"MYC"
+all.data$test[lapply(all.data$GS.br..follow.link.to.MSigDB, function(x) grep(pattern = "HNF4", x))>0]<-"HNF4A"
+
+# all.data$test[is.na(all.data$test)]<-FALSE
+all.data<-all.data[rev(order(all.data$NES)),]
+
+all.data$n<-1:nrow(all.data)
+all.data<-all.data[rev(order(all.data$test)),]
+
+ggplot(all.data, aes(x= NES, y= FDR.q.val , color = test)) + geom_point()+scale_color_manual(values = c("#E41A1C" ,"#377EB8", "grey" ))+theme_bw()
+
+
+p<-ggplot(all.data, aes(y= NES, x= n, color = test))+geom_point()+scale_color_manual(values = c("#E41A1C" ,"#377EB8", "grey" ))+theme_cowplot(12)
+
+
+p
+
+
+ggsave(plot = p, file = "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/GM_GSEA_HNF4A_MYC.pdf",  width = 7, height = 6, useDingbats=FALSE)
+
+
+```
+
+## AP-1 in CAG/NAG
+Here I am using data from GSEA. 
+GSEA software version 4.1.0, C3 TF Database version 7.4
+
+```{r}
+#Read data
+GSEA.dir<-"/home/karolno/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/GSEA/Table2_GSEA_C3.GseaPreranked.1629748870752/"
+
+all.data<-read.delim(file= list.files(GSEA.dir, pattern = "gsea_report_for_na_pos.+tsv", full.names = TRUE))
+all.data<-rbind(all.data,read.delim(file= list.files(GSEA.dir, pattern = "gsea_report_for_na_neg.+tsv", full.names = TRUE)))
+
+
+all.data$test<-"Other"
+all.data$test[lapply(all.data$GS.br..follow.link.to.MSigDB, function(x) grep(pattern = "^AP-1", x))>0]<-"AP-1"
+all.data$test[lapply(all.data$GS.br..follow.link.to.MSigDB, function(x) grep(pattern = "^AP1", x))>0]<-"AP-1"
+# all.data$test[lapply(all.data$GS.br..follow.link.to.MSigDB, function(x) grep(pattern = "HNF4", x))>0]<-"HNF4A"
+
+# all.data$test[is.na(all.data$test)]<-FALSE
+all.data<-all.data[rev(order(all.data$NES)),]
+
+all.data$n<-1:nrow(all.data)
+all.data<-all.data[rev(order(all.data$test)),]
+
+ggplot(all.data, aes(x= NES, y= FDR.q.val , color = test)) + geom_point()+scale_color_manual(values = c("#E41A1C" ,"#377EB8", "grey" ))+theme_bw()
+
+
+p<-ggplot(all.data, aes(y= NES, x= n, color = test))+geom_point()+scale_color_manual(values = c("#E41A1C", "grey" ))+theme_cowplot(12)
+
+
+p
+
+
+ggsave(plot = p, file = "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_4/AG_GSEA_AP-1.pdf",  width = 7, height = 6, useDingbats=FALSE)
+
+
+```
+
+
+
+# End Matter
+
+To finish get session info:
+
+
+```{r Endnote, include=TRUE, echo=TRUE, warning=FALSE, eval=TRUE, message=FALSE, tidy=TRUE}
+sessionInfo()
+```
+

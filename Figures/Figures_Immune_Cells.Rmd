@@ -1,0 +1,1460 @@
+---
+title: "Annotation of Immune cells"
+author: "Karol Nowicki-Osuch"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: paper
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read in the data
+
+```{r libraries, message=FALSE}
+library(scran)
+# library(colorBlindness)
+library(ggplot2)
+# library(SingleR)
+# library(Rcpp)
+# library(RcppEigen)
+# library(ggsci)
+# library(scibet)
+# library(tidyverse)
+# # library(scater)
+# # library(DropletUtils)
+library(openxlsx)
+# # library(Rtsne)
+# # library(umap)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+# # library(pheatmap)
+# # library(Seurat)
+source("~/Dropbox/Postdoc/git/Gastric_IM//Analysis/Functions/auxiliary.R")
+# library(scater)
+# library(TSCAN)
+library(foreach)
+library(doParallel)
+# library(MuSiC)
+# library(monocle3)
+# library(gridExtra)
+# library(grid)
+```
+
+# Settings
+
+```{r}
+
+#Taken from colorBlindness::SteppedSequential5Steps
+## colorBlindness::displayAvailablePalette(color="white")
+colour.palet <- c("NE" = "#990F0F", 
+                  "NSCJ" = "#CC5151",
+                  "SMG" = "#FFB2B2",
+                  "GM" = "#E5B17E",
+                  "BE" = "#99540F",
+                  "BSCJ" = "#CC8E51",
+                  "NG" = "#6B990F",
+                  "NGB" = "#A3CC51",
+                  "NAG" = "#0F6B99",
+                  "CAG" = "#2C85B2",
+                  "GIM" = "#51A3CC",
+                  "CIM" = "#7EC3E5",
+                  "ND" = "#260F99",
+                  "Ileum" = "#422CB2",
+                  "Colon" = "#6551CC",
+                  "Rectum" = "#8F7EE5")
+# colour.palet <- c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))[1:length(unique(sce$Tissue))]
+# names(colour.palet) <- sort(unique(sce$Tissue))
+cell.order<-c(colorBlindness::SteppedSequential5Steps[6:10],rev(RColorBrewer::brewer.pal(n = 8,name = "Reds")) ,colorBlindness::SteppedSequential5Steps[c(11:13,15, 16,18, 21:25)], "grey60")
+
+names(cell.order)<-c(
+  "Superficial", 
+  "Intermediate",    
+  "Suprabasal",
+  "Basal",
+  "SMG",
+  
+  "Foveolar_Differentiated",
+  "Foveolar_Intermediate",
+  "Neck-Cells",
+  "Chief",        
+  "Parietal",
+  "Enteroendocrine_CHGA",
+  "Enteroendocrine_GHRL", 
+  "Enteroendocrine_GAST",
+  
+  
+  
+  "Enterocytes",
+  "Enterocytes_Intermediate",
+  "Intestinal_Undifferentiated",
+  "Goblet",
+  
+  "Fibroblasts",
+  "Endothelial",
+  
+  "B-Cells",
+  "T-Cells",
+  "Plasma-Cells",
+  "Macrophages",
+  "Mast",
+  
+  "Erythrocyte"
+)
+```
+
+
+# Process all immune cells
+
+
+```{r visualise}
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion2.rds")
+
+# Keep only columnar cell types
+corrected<-metadata(sce)$corrected_2000[,sce$Tissuetypes_global == "Immune"]
+sce <- sce[,sce$Tissuetypes_global == "Immune"]
+
+# Recompute umap
+
+# Compute tsne on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+#foreach(j=c(15, 100)) %:%
+stopCluster(cl)
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce)<-lapply(results, function (x) {x$layout[,1:2]})
+
+set.seed(12345)
+jumbled<-sample(ncol(sce), replace = FALSE)
+sce<-sce[,jumbled]
+
+# Clustering on corrected data in the selected tissues
+g <- buildSNNGraph(corrected, k = 10)
+clusters_selected <- igraph::cluster_louvain(g)$membership
+clusters_selected <- clusters_selected[jumbled]
+clusters <- sce$Global_cluster_selected
+
+# Perform differential expression
+markers <- findMarkers(sce, groups = clusters_selected, 
+                       block = paste(colData(sce)$Patient, colData(sce)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/Marker_genes_combined_clean.xlsx", sep = ""))
+
+sce$Immune_clusters<-clusters_selected
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Immune.rds")
+
+```
+
+
+## Plot the clustering of the Immune cells
+
+```{r}
+
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Immune.rds")
+
+umap.data<-reducedDims(sce)$umap_MinDist_0.1_N_Neighbors_15 
+umap.min.max<-c(floor(min(umap.data[,1:2])), ceiling(max(umap.data[,1:2])))
+
+# Visualise Clusters
+Cluster.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                Cluster = factor(sce$Immune_clusters))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cluster), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=2, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$Immune_clusters), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cluster.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_Immune.tiff", Cluster.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_Immune.pdf", Cluster.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# Visualise Clusters
+tissues.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                tissue = factor(colData(sce)$Tissue, levels = names(colour.palet)))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  # scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+  scale_color_manual(values = colour.palet)
+
+print(tissues.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_Immune.tiff", tissues.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_Immune.pdf", tissues.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+# Visualise Clusters
+Global.cell.types<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     Cell_type = factor(sce$Celltypes_global, levels = names(cell.order)))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cell_type), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  geom_text(data= aggregate(umap.data, list(sce$Celltypes_global), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+
+
+print(Global.cell.types)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names.tiff", Global.cell.types, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names.pdf", Global.cell.types, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+gene<-"CTLA4"
+gene.expression<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     gene = logcounts(sce)[rowData(sce)$Symbol == gene,])) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = gene), size = 0.5) + 
+  scale_colour_viridis(option = "B") +
+  theme_void() +
+  ggtitle(gene) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) 
+plot(gene.expression)
+
+
+```
+
+# Process B and T-cells
+
+```{r visualise}
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion2.rds")
+
+sce <- sce[,sce$Celltypes_global %in% c("T-Cells", "B-Cells")]
+
+
+###########################################
+sce<-batchelor::multiBatchNorm(sce, batch = sce[["Sample"]])
+
+############# run first for FLE analysis
+
+## get matrix of HVG
+HVG.genes<-modelGeneVar(sce, block = sce[["Sample"]])
+top.sce <- getTopHVGs(HVG.genes, n=2000)
+
+
+batch.order.names<-list()
+length(batch.order.names) <- length(unique(paste(sce$Tissue, sce$Study, sep = "_")))
+names(batch.order.names) <- c("NE_Fitz", "NSCJ_Fitz", "NG_Fitz", "NGB_Ji", "ND_Fitz", "SMG_Fitz",  "BSCJ_Fitz", "GM_Fitz", "BE_Fitz","CIM_Fitz", "GIM_Fitz", "NAG_Li", "CAG_Li", "GIM_Li", "Ileum_Wang", "Colon_Wang", "Rectum_Wang")
+
+for (n in names(batch.order.names)) {
+  batch.order.names[[n]]<-c(names(sort(table(sce$Sample[paste(sce$Tissue, sce$Study, sep = "_") == n]), decreasing = TRUE)))
+}
+
+corrected <- batch.correction.single(sce, batches = "Sample", m.order = batch.order.names, number.HVG = 2000)
+
+
+
+# Keep only columnar cell types
+# corrected<-metadata(sce)$corrected_2000[,sce$Celltypes_global %in% c("T-Cells", "B-Cells")]
+# sce <- sce[,sce$Celltypes_global %in% c("T-Cells", "B-Cells")]
+
+# Recompute umap
+
+# Compute tsne on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+#foreach(j=c(15, 100)) %:%
+stopCluster(cl)
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce)<-lapply(results, function (x) {x$layout[,1:2]})
+
+set.seed(12345)
+jumbled<-sample(ncol(sce), replace = FALSE)
+sce<-sce[,jumbled]
+
+# Clustering on corrected data in the selected tissues
+g <- buildSNNGraph(corrected, k = 10)
+clusters_selected <- igraph::cluster_louvain(g)$membership
+clusters_selected <- clusters_selected[jumbled]
+clusters <- sce$Global_cluster_selected
+
+# Perform differential expression
+markers <- findMarkers(sce, groups = clusters_selected, 
+                       block = paste(colData(sce)$Patient, colData(sce)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/Marker_genes_TandB-Cells_new_correction.xlsx", sep = ""))
+
+sce$TandB_clusters<-clusters_selected
+metadata(sce)$corrected_2000<-corrected[,jumbled]
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_TandB_new_correction.rds")
+
+```
+
+
+
+## T-cells
+
+Cluster 2 contains all B-cells (the original annotation had small mistake). Remove it from T-Cell analysis
+
+```{r visualise}
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_TandB_new_correction.rds")
+
+sce <- sce[,sce$TandB_clusters != 2]
+
+
+###########################################
+sce<-batchelor::multiBatchNorm(sce, batch = sce[["Sample"]])
+
+############# run first for FLE analysis
+
+## get matrix of HVG
+HVG.genes<-modelGeneVar(sce, block = sce[["Sample"]])
+top.sce <- getTopHVGs(HVG.genes, n=2000)
+
+
+batch.order.names<-list()
+length(batch.order.names) <- length(unique(paste(sce$Tissue, sce$Study, sep = "_")))
+names(batch.order.names) <- c("NE_Fitz", "NSCJ_Fitz", "NG_Fitz", "NGB_Ji", "ND_Fitz", "SMG_Fitz",  "BSCJ_Fitz", "GM_Fitz", "BE_Fitz","CIM_Fitz", "GIM_Fitz", "NAG_Li", "CAG_Li", "GIM_Li", "Ileum_Wang", "Colon_Wang", "Rectum_Wang")
+
+for (n in names(batch.order.names)) {
+  batch.order.names[[n]]<-c(names(sort(table(sce$Sample[paste(sce$Tissue, sce$Study, sep = "_") == n]), decreasing = TRUE)))
+}
+
+corrected <- batch.correction.single(sce, batches = "Sample", m.order = batch.order.names, number.HVG = 2000)
+
+
+
+# Compute umap on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+#foreach(j=c(15, 100)) %:%
+stopCluster(cl)
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce)<-lapply(results, function (x) {x$layout[,1:2]})
+
+# Clustering on corrected data in the selected tissues
+g <- buildSNNGraph(corrected, k = 10)
+# I am chaning claustering to walktrap as it identifies cluster a bit better.
+# clusters_selected <- igraph::cluster_louvain(g)$membership
+clusters_selected <- igraph::cluster_walktrap(g)$membership
+
+# Perform differential expression
+markers <- findMarkers(sce, groups = clusters_selected, 
+                       block = paste(colData(sce)$Patient, colData(sce)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/Marker_genes_T-Cells_new_correction.xlsx", sep = ""))
+
+sce$TCell_clusters<-clusters_selected
+metadata(sce)$corrected_2000<-corrected
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_T-Cells_new_correction.rds")
+
+```
+
+## add cell types
+
+I perform manual annotation using the following papers:
+https://www.nature.com/articles/s41598-020-76972-9
+https://www.nature.com/articles/s41586-021-03852-1
+https://www.nature.com/articles/s41423-020-00574-8
+
+
+```{r}
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_T-Cells_new_correction.rds")
+
+reannot.clusters<-read.delim("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/CellType_T-Cells.txt")
+
+sce$Celltypes_TCells<-reannot.clusters$Immune_cellType[match(sce$TCell_clusters, reannot.clusters$TCell_clusters)]
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_T-Cells_new_correction.rds")
+
+
+```
+
+## Plot the clustering of the Immune cells
+
+```{r}
+
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_T-Cells_new_correction.rds")
+
+umap.data<-reducedDims(sce)$umap_MinDist_0.1_N_Neighbors_15 
+umap.min.max<-c(floor(min(umap.data[,1:2])), ceiling(max(umap.data[,1:2])))
+
+# Visualise Clusters
+Cluster.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                Cluster = factor(sce$TCell_clusters))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cluster), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$TCell_clusters), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cluster.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_T-Cell_new_correction.tiff", Cluster.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_T-Cell_new_correction.pdf", Cluster.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+# Visualise cell types
+Cell.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                CellType = factor(sce$Celltypes_TCells))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = CellType), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$Celltypes_TCells), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 4)
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cell.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/T-Cells_names.tiff", Cell.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/T-Cells_names.pdf", Cell.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# Visualise Clusters
+tissues.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                tissue = factor(colData(sce)$Tissue, levels = names(colour.palet)))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  # scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+  scale_color_manual(values = colour.palet)
+
+print(tissues.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_T-Cell_new_correction.tiff", tissues.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_T-Cell_new_correction.pdf", tissues.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+# Visualise Clusters
+Global.cell.types<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     Cell_type = factor(sce$Celltypes_global, levels = names(cell.order)))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cell_type), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  geom_text(data= aggregate(umap.data, list(sce$Celltypes_global), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+
+
+print(Global.cell.types)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names_T-Cell_new_correction.tiff", Global.cell.types, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names_T-Cell_new_correction.pdf", Global.cell.types, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+gene<-"CX3CR1"
+gene.expression<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     gene = logcounts(sce)[rowData(sce)$Symbol == gene,])) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = gene), size = 0.5) + 
+  scale_colour_viridis(option = "B") +
+  theme_void() +
+  ggtitle(gene) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) 
+plot(gene.expression)
+
+
+```
+
+## Prepare boxplot per tissue
+
+```{r}
+countsdata<-reshape2::melt(table(sce$Celltypes_TCells, paste(sce$Tissue, sce$Study, sce$Patient_type)))
+colnames(countsdata)<-c("CellType", "Tissue", "Proportion")
+countsdata<-countsdata[!countsdata$Tissue %in% c( "Ileum Wang Healthy", "Colon Wang Healthy", "Rectum Wang Healthy"),]
+# countsdata$Cluster<-factor(countsdata$CellType, levels = )
+countsdata$Tissue <- factor(countsdata$Tissue, levels = c("NE Fitz Healthy", "SMG Fitz Healthy", "NSCJ Fitz Healthy", "NG Fitz Healthy", "ND Fitz Healthy", "NGB Ji Healthy", "NE Fitz Diseased", "NG Fitz Diseased", "GM Fitz Diseased", "BE Fitz Diseased", "BSCJ Fitz Diseased", "NAG Li Diseased", "CAG Li Diseased", "CIM Fitz Diseased", "GIM Fitz Diseased", "GIM Li Diseased"))
+# countsdata<-countsdata[!(countsdata$Tissue %in%   c("NE")),]
+
+
+
+boxplot.celltypes<-ggplot(data = countsdata, aes(x = Tissue, y = Proportion, fill = CellType, label = Proportion)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  theme_cowplot(12) +  
+  # scale_x_discrete(limits=rev) +
+  geom_text(aes(label = ifelse(Proportion <= 0 , NA, Proportion)), stat='identity', position=position_fill(vjust = .5), size = 4)
+plot(boxplot.celltypes)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Barchart_Immune.pdf", boxplot.celltypes, device = "pdf", units="in", width=18, height=6, useDingbats = FALSE)
+```
+
+
+
+## Final Figure
+
+```{r}
+lay <- rbind(c(1,2),
+             c(4,4),
+             # c(4,4),
+             c(4,4))
+multiplot<-gridExtra::grid.arrange(grobs = list(Cell.plot, tissues.plot, boxplot.celltypes+ coord_flip()), layout_matrix = lay)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Multiplot_T-Cells.pdf", multiplot, device = "pdf", units="cm", width=21, height=29.7, useDingbats = FALSE)  #210 x 297
+```
+
+
+# B-Cells and plasma cells
+
+```{r}
+sce.all <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion2.rds")
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_TandB_new_correction.rds")
+sce <- sce[,sce$TandB_clusters == 2]
+corrected <-metadata(sce.all)$corrected_2000[,(paste0(sce.all$Sample, sce.all$Barcode) %in% paste0(sce$Sample, sce$Barcode)) | (sce.all$Celltypes_global %in% c("Plasma-Cells"))]
+sce <- sce.all[,(paste0(sce.all$Sample, sce.all$Barcode) %in% paste0(sce$Sample, sce$Barcode)) | (sce.all$Celltypes_global %in% c("Plasma-Cells"))]
+
+
+# Compute umap on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+#foreach(j=c(15, 100)) %:%
+stopCluster(cl)
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce)<-lapply(results, function (x) {x$layout[,1:2]})
+
+# Clustering on corrected data in the selected tissues
+g <- buildSNNGraph(corrected, k = 10)
+
+clusters_selected <- igraph::cluster_louvain(g)$membership
+# clusters_selected <- igraph::cluster_walktrap(g)$membership
+
+# Perform differential expression
+markers <- findMarkers(sce, groups = clusters_selected, 
+                       block = paste(colData(sce)$Patient, colData(sce)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/Marker_genes_PlasmaandB-Cells.xlsx", sep = ""))
+
+sce$BCell_clusters<-clusters_selected[jumbled]
+
+set.seed(12345)
+jumbled<-sample(ncol(sce), replace = FALSE)
+sce<-sce[,jumbled]
+metadata(sce)$corrected_2000<-corrected[,jumbled]
+
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_PlasmaandT-Cells.rds")
+
+```
+
+## add cell types
+
+I perform manual annotation using the following papers:
+https://www.nature.com/articles/s41598-020-76972-9
+https://www.nature.com/articles/s41586-021-03852-1
+https://www.nature.com/articles/s41423-020-00574-8
+
+
+```{r}
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_selected_corrected_PlasmaandT-Cells.rds")
+
+reannot.clusters<-read.delim("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/CellType_B-Cells.txt")
+
+sce$Celltypes_BCells<-reannot.clusters$Immune_cellType[match(sce$BCell_clusters, reannot.clusters$BCell_clusters)]
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_PlasmaandT-Cells.rds")
+
+```
+
+## add H.pylori status
+
+Table S2 in the the original paper says that L05 and L07 are positive for H.Pylori
+
+
+```{r}
+sce$H.pylori <- NA
+sce$H.pylori[sce$Study == "Li"] <- "Neg"
+sce$H.pylori[sce$Study == "Li" & sce$Patient %in% c("L05", "L07")] <- "Pos"
+sce$H.pylori <- factor(sce$H.pylori, levels = c("Pos", "Neg", NA))
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_PlasmaandT-Cells.rds")
+
+```
+
+
+## Plot the clustering of the B and Plasma cells
+
+```{r}
+
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_PlasmaandT-Cells.rds")
+
+umap.data<-reducedDims(sce)$umap_MinDist_0.1_N_Neighbors_15 
+umap.min.max<-c(floor(min(umap.data[,1:2])), ceiling(max(umap.data[,1:2])))
+
+# Visualise Clusters
+Cluster.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                Cluster = factor(sce$BCell_clusters))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cluster), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$BCell_clusters), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 4)
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cluster.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_B-Cell_new_correction.tiff", Cluster.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_B-Cell_new_correction.pdf", Cluster.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+# Visualise cell types
+Cell.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                CellType = factor(sce$Celltypes_BCells))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = CellType), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$Celltypes_BCells), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 4)
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cell.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/B-Cells_names.tiff", Cell.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/B-Cells_names.pdf", Cell.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# Visualise Clusters
+tissues.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                tissue = factor(colData(sce)$Tissue, levels = names(colour.palet)))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  # scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+  scale_color_manual(values = colour.palet)
+
+print(tissues.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_B-Cell_new_correction.tiff", tissues.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_B-Cell_new_correction.pdf", tissues.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# Visualise H.pylori status
+Hpylori.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                tissue = sce$H.pylori)) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  scale_color_manual(values = c(brewer.pal(9, "Set1")[c(2:1,3)]))
+  # scale_color_manual(values = colour.palet)
+
+
+
+print(Hpylori.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_B-Cell_H.Pylori.tiff", Hpylori.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_B-Cell_H.Pylori.pdf", Hpylori.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# Visualise Clusters
+Global.cell.types<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     Cell_type = factor(sce$Celltypes_global, levels = names(cell.order)))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cell_type), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  geom_text(data= aggregate(umap.data, list(sce$Celltypes_global), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+
+
+print(Global.cell.types)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names_B-Cell_new_correction.tiff", Global.cell.types, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names_B-Cell_new_correction.pdf", Global.cell.types, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# Visualise Study
+Study.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     Study = factor(sce$Study))[sce$Study != "Wang",]) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Study), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) 
+
+
+print(Study.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Study_B-Cell.tiff", Study.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Study_B-Cell.pdf", Study.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+gene<-"JCHAIN"
+gene.expression<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     gene = logcounts(sce)[rowData(sce)$Symbol == gene,])) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = gene), size = 0.5) + 
+  scale_colour_viridis(option = "B") +
+  theme_void() +
+  ggtitle(gene) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) 
+
+plot(gene.expression)
+
+gene<-"ENSG00000166710"
+gene.expression<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     gene = logcounts(sce)[rowData(sce)$ID == gene,])) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = gene), size = 0.5) + 
+  scale_colour_viridis(option = "B") +
+  theme_void() +
+  ggtitle(gene) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) 
+
+plot(gene.expression)
+
+
+```
+
+## Prepare boxplot per tissue
+
+```{r}
+# sce.tmp<-sce[,sce$Patient != "Patient21"]
+# sce.tmp<-sce[,sce$Study == "Fitz" & sce$Tissue == "GIM"]
+
+countsdata<-reshape2::melt(table(sce$Celltypes_BCells, paste(sce$Tissue, sce$Study, sce$Patient_type)))
+colnames(countsdata)<-c("CellType", "Tissue", "Proportion")
+countsdata<-countsdata[!countsdata$Tissue %in% c( "Ileum Wang Healthy", "Colon Wang Healthy", "Rectum Wang Healthy"),]
+# countsdata$Cluster<-factor(countsdata$CellType, levels = )
+countsdata$Tissue <- factor(countsdata$Tissue, levels = c("NE Fitz Healthy", "SMG Fitz Healthy", "NSCJ Fitz Healthy", "NG Fitz Healthy", "ND Fitz Healthy", "NGB Ji Healthy", "NE Fitz Diseased", "NG Fitz Diseased", "GM Fitz Diseased", "BE Fitz Diseased", "BSCJ Fitz Diseased", "NAG Li Diseased", "CAG Li Diseased", "CIM Fitz Diseased", "GIM Fitz Diseased", "GIM Li Diseased"))
+# countsdata<-countsdata[!(countsdata$Tissue %in%   c("NE")),]
+countsdata$CellType <- factor(countsdata$CellType, levels = levels(countsdata$CellType)[c(8:9, 1, 4:2, 5:7)])
+
+
+boxplot.celltypes<-ggplot(data = countsdata, aes(x = Tissue, y = Proportion, fill = CellType, label = Proportion)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  theme_cowplot(12) +  
+  # scale_x_discrete(limits=rev) +
+  geom_text(aes(label = ifelse(Proportion <= 0 , NA, Proportion)), stat='identity', position=position_fill(vjust = .5), size = 4)
+plot(boxplot.celltypes)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Barchart_B-Cells.pdf", boxplot.celltypes, device = "pdf", units="in", width=18, height=6, useDingbats = FALSE)
+```
+
+
+
+## Final Figure
+
+```{r}
+lay <- rbind(c(1, 2, 3),
+             c(4, 4, 4),
+             # c(4,4),
+             c(4, 4, 4))
+multiplot<-gridExtra::grid.arrange(grobs = list(Cell.plot, tissues.plot, Hpylori.plot, boxplot.celltypes+ coord_flip()), layout_matrix = lay)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Multiplot_B-Cells.pdf", multiplot, device = "pdf", units="cm", width=21, height=29.7, useDingbats = FALSE)  #210 x 297
+```
+
+
+
+
+# Myeloid cells
+
+```{r}
+sce.all <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion2.rds")
+sce <- sce.all[,sce.all$Celltypes_global %in% c("Macrophages", "Mast")]
+corrected <-metadata(sce.all)$corrected_2000[,sce.all$Celltypes_global %in% c("Macrophages", "Mast")]
+
+
+# Compute umap on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+#foreach(j=c(15, 100)) %:%
+stopCluster(cl)
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce)<-lapply(results, function (x) {x$layout[,1:2]})
+
+# Clustering on corrected data in the selected tissues
+g <- buildSNNGraph(corrected, k = 10)
+
+clusters_selected <- igraph::cluster_louvain(g)$membership
+# clusters_selected <- igraph::cluster_walktrap(g)$membership
+# table(clusters_selected)
+# Perform differential expression
+markers <- findMarkers(sce, groups = clusters_selected, 
+                       block = paste(colData(sce)$Patient, colData(sce)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/Marker_genes_Myeloid.xlsx", sep = ""))
+
+sce$Myeloid_clusters<-clusters_selected
+
+set.seed(12345)
+jumbled<-sample(ncol(sce), replace = FALSE)
+sce<-sce[,jumbled]
+metadata(sce)$corrected_2000<-corrected[,jumbled]
+
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Myeloid.rds")
+
+```
+
+## add cell types
+
+I perform manual annotation using the following papers:
+https://www.nature.com/articles/s41598-020-76972-9
+https://www.nature.com/articles/s41586-021-03852-1
+https://www.nature.com/articles/s41423-020-00574-8
+
+https://onlinelibrary.wiley.com/doi/full/10.1046/j.1365-2141.1999.01572.x
+```{r}
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_selected_corrected_Myeloid.rds")
+
+reannot.clusters<-read.delim("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/CellType_Myeloid-Cells.txt")
+
+sce$Celltypes_MyeloidCells<-reannot.clusters$Immune_cellType[match(sce$Myeloid_clusters, reannot.clusters$MyeloidCell_clusters)]
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Myeloid.rds")
+
+```
+
+<!-- ## add H.pylori status -->
+
+<!-- Table S2 in the the original paper says that L05 and L07 are positive for H.Pylori -->
+
+
+<!-- ```{r} -->
+<!-- sce$H.pylori <- NA -->
+<!-- sce$H.pylori[sce$Study == "Li"] <- "Neg" -->
+<!-- sce$H.pylori[sce$Study == "Li" & sce$Patient %in% c("L05", "L07")] <- "Pos" -->
+<!-- sce$H.pylori <- factor(sce$H.pylori, levels = c("Pos", "Neg", NA)) -->
+
+<!-- saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_selected_corrected_PlasmaandT-Cells.rds") -->
+
+<!-- ``` -->
+
+
+## Plot the clustering of the Myeloid cells
+
+```{r}
+
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Myeloid.rds")
+
+#cluster 8 contains contaminaiton of endothelial cells. I will remove it from the visualisation
+sce <- sce[,sce$Myeloid_clusters != 8]
+
+
+umap.data<-reducedDims(sce)$umap_MinDist_0.1_N_Neighbors_15 
+umap.min.max<-c(floor(min(umap.data[,1:2])), ceiling(max(umap.data[,1:2])))
+
+# Visualise Clusters
+Cluster.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                Cluster = factor(sce$Myeloid_clusters))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cluster), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$Myeloid_clusters), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cluster.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_Myeloid.tiff", Cluster.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_Myeloid.pdf", Cluster.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+# Visualise cell types
+Cell.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                CellType = factor(sce$Celltypes_MyeloidCells))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = CellType), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$Celltypes_MyeloidCells), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 4) 
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cell.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Myeloid_names.tiff", Cell.plot, device = "tiff", units="in", width=10, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Myeloid_names.pdf", Cell.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# Visualise Clusters
+tissues.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                tissue = factor(colData(sce)$Tissue, levels = names(colour.palet)))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  # scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+  scale_color_manual(values = colour.palet)
+
+print(tissues.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_Myeloid.tiff", tissues.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_Myeloid.pdf", tissues.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# # Visualise H.pylori status
+# Hpylori.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+#                                 UMAP2 = umap.data[,2],
+#                                 tissue = sce$H.pylori)) +
+#   geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+#   geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+#   theme_void() +
+#   ylim(umap.min.max) +
+#   xlim(umap.min.max) +
+#   scale_color_manual(values = c(brewer.pal(9, "Set1")[c(2:1,3)]))
+#   # scale_color_manual(values = colour.palet)
+# 
+# 
+# 
+# print(Hpylori.plot)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_B-Cell_H.Pylori.tiff", Hpylori.plot, device = "tiff", units="in", width=8, height=6)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_B-Cell_H.Pylori.pdf", Hpylori.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# # # Visualise Clusters
+# Global.cell.types<-ggplot(data.frame(UMAP1 = umap.data[,1],
+#                                      UMAP2 = umap.data[,2],
+#                                      Cell_type = factor(sce$Celltypes_global, levels = names(cell.order)))) +
+#   geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+#   geom_point(aes(UMAP1, UMAP2, colour = Cell_type), size = 0.5) +
+#   theme_void() +
+#   ylim(umap.min.max) +
+#   xlim(umap.min.max) +
+#   geom_text(data= aggregate(umap.data, list(sce$Celltypes_global), mean),
+#             mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+# 
+# 
+# print(Global.cell.types)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names_B-Cell_new_correction.tiff", Global.cell.types, device = "tiff", units="in", width=8, height=6)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names_B-Cell_new_correction.pdf", Global.cell.types, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+# 
+# # Visualise Study
+# Study.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+#                                      UMAP2 = umap.data[,2],
+#                                      Study = factor(sce$Study))[sce$Study != "Wang",]) +
+#   geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+#   geom_point(aes(UMAP1, UMAP2, colour = Study), size = 0.5) + 
+#   theme_void() +
+#   ylim(umap.min.max) +
+#   xlim(umap.min.max) 
+# 
+# 
+# print(Study.plot)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Study_B-Cell.tiff", Study.plot, device = "tiff", units="in", width=8, height=6)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Study_B-Cell.pdf", Study.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+# 
+
+gene<-"IFI27"
+gene.expression<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     gene = logcounts(sce)[rowData(sce)$Symbol == gene,])) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = gene), size = 0.5) + 
+  scale_colour_viridis(option = "B") +
+  theme_void() +
+  ggtitle(gene) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  geom_text(data= aggregate(umap.data, list(sce$Celltypes_global), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "Green", size = 6)
+
+
+plot(gene.expression)
+
+gene<-"ENSG00000166710"
+gene.expression<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     gene = logcounts(sce)[rowData(sce)$ID == gene,])) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = gene), size = 0.5) + 
+  scale_colour_viridis(option = "B") +
+  theme_void() +
+  ggtitle(gene) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) 
+
+plot(gene.expression)
+
+
+```
+
+## Prepare boxplot per tissue
+
+```{r}
+# sce.tmp<-sce[,sce$Patient != "Patient21"]
+# sce.tmp<-sce[,sce$Study == "Fitz" & sce$Tissue == "GIM"]
+
+countsdata<-reshape2::melt(table(sce$Celltypes_MyeloidCells, paste(sce$Tissue, sce$Study, sce$Patient_type)))
+colnames(countsdata)<-c("CellType", "Tissue", "Proportion")
+countsdata<-countsdata[!countsdata$Tissue %in% c( "Ileum Wang Healthy", "Colon Wang Healthy", "Rectum Wang Healthy"),]
+# countsdata$Cluster<-factor(countsdata$CellType, levels = )
+countsdata$Tissue <- factor(countsdata$Tissue, levels = c("NE Fitz Healthy", "SMG Fitz Healthy", "NSCJ Fitz Healthy", "NG Fitz Healthy", "ND Fitz Healthy", "NGB Ji Healthy", "NE Fitz Diseased", "NG Fitz Diseased", "GM Fitz Diseased", "BE Fitz Diseased", "BSCJ Fitz Diseased", "NAG Li Diseased", "CAG Li Diseased", "CIM Fitz Diseased", "GIM Fitz Diseased", "GIM Li Diseased"))
+# countsdata<-countsdata[!(countsdata$Tissue %in%   c("NE")),]
+countsdata$CellType <- factor(countsdata$CellType, levels = levels(countsdata$CellType)[c(2:3,6:7,1, 4:5)])
+
+
+boxplot.celltypes<-ggplot(data = countsdata, aes(x = Tissue, y = Proportion, fill = CellType, label = Proportion)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  theme_cowplot(12) +  
+  # scale_x_discrete(limits=rev) +
+  geom_text(aes(label = ifelse(Proportion <= 0 , NA, Proportion)), stat='identity', position=position_fill(vjust = .5), size = 4)
+plot(boxplot.celltypes)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Barchart_Myeloid_Cells.pdf", boxplot.celltypes, device = "pdf", units="in", width=18, height=6, useDingbats = FALSE)
+```
+
+
+## Final Figure
+
+```{r}
+lay <- rbind(c(1,2),
+             c(4,4),
+             # c(4,4),
+             c(4,4))
+multiplot<-gridExtra::grid.arrange(grobs = list(Cell.plot, tissues.plot, boxplot.celltypes+ coord_flip() ), layout_matrix = lay)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Multiplot_Myeloid.pdf", multiplot, device = "pdf", units="cm", width=21, height=29.7, useDingbats = FALSE)  #210 x 297
+```
+
+
+# Endothelial cells
+
+```{r}
+sce.all <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion2.rds")
+sce <- sce.all[,sce.all$Celltypes_global %in% c("Endothelial")]
+corrected <-metadata(sce.all)$corrected_2000[,sce.all$Celltypes_global %in% c("Endothelial")]
+
+
+# Compute umap on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+#foreach(j=c(15, 100)) %:%
+stopCluster(cl)
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce)<-lapply(results, function (x) {x$layout[,1:2]})
+
+# Clustering on corrected data in the selected tissues
+g <- buildSNNGraph(corrected, k = 10)
+
+clusters_selected <- igraph::cluster_louvain(g)$membership
+# clusters_selected <- igraph::cluster_walktrap(g)$membership
+# table(clusters_selected)
+# Perform differential expression
+markers <- findMarkers(sce, groups = clusters_selected, 
+                       block = paste(colData(sce)$Patient, colData(sce)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/Marker_genes_Endothelial.xlsx", sep = ""))
+
+sce$Endothelial_clusters<-clusters_selected
+
+set.seed(12345)
+jumbled<-sample(ncol(sce), replace = FALSE)
+sce<-sce[,jumbled]
+metadata(sce)$corrected_2000<-corrected[,jumbled]
+
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Endothelial.rds")
+
+```
+
+## add cell types
+
+I perform manual annotation using the following papers:
+https://www.nature.com/articles/s41598-020-76972-9
+https://www.nature.com/articles/s41586-021-03852-1
+https://www.nature.com/articles/s41423-020-00574-8
+
+https://www.science.org/doi/full/10.1126/stke.3552006pe39
+
+```{r}
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Endothelial.rds")
+
+reannot.clusters<-read.delim("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Immune/Endothelial-Cells.txt")
+
+sce$Celltypes_Endothelial<-reannot.clusters$Endothelial_cellType[match(sce$Endothelial_clusters, reannot.clusters$Endothelial_clusters)]
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Endothelial.rds")
+
+```
+
+
+## Plot the clustering of the B and Plasma cells
+
+```{r}
+
+sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_Endothelial.rds")
+
+
+
+umap.data<-reducedDims(sce)$umap_MinDist_0.1_N_Neighbors_15 
+umap.min.max<-c(floor(min(umap.data[,1:2])), ceiling(max(umap.data[,1:2])))
+
+# Visualise Clusters
+Cluster.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                Cluster = factor(sce$Endothelial_clusters))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = Cluster), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$Endothelial_clusters), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 4)
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cluster.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_Endothelial.tiff", Cluster.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Clusters_Endothelial.pdf", Cluster.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+# Visualise cell types
+Cell.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                CellType = factor(sce$Celltypes_Endothelial))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = CellType), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  guides(color=guide_legend(ncol=1, override.aes = list(size=4))) +
+  geom_text(data= aggregate(umap.data, list(sce$Celltypes_Endothelial), mean),
+            mapping = aes(V1, V2, label = Group.1), colour = "black", size = 4) 
+# scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+# scale_color_manual(values = colour.palet)
+
+print(Cell.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Endothelial_names.tiff", Cell.plot, device = "tiff", units="in", width=10, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Endothelial_names.pdf", Cell.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# Visualise Clusters
+tissues.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                UMAP2 = umap.data[,2],
+                                tissue = factor(colData(sce)$Tissue, levels = names(colour.palet)))) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+  theme_void() +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) +
+  # scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+  scale_color_manual(values = colour.palet)
+
+print(tissues.plot)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_Endothelial.tiff", tissues.plot, device = "tiff", units="in", width=8, height=6)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Tissues_Endothelial.pdf", tissues.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# # Visualise H.pylori status
+# Hpylori.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+#                                 UMAP2 = umap.data[,2],
+#                                 tissue = sce$H.pylori)) +
+#   geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+#   geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+#   theme_void() +
+#   ylim(umap.min.max) +
+#   xlim(umap.min.max) +
+#   scale_color_manual(values = c(brewer.pal(9, "Set1")[c(2:1,3)]))
+#   # scale_color_manual(values = colour.palet)
+# 
+# 
+# 
+# print(Hpylori.plot)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_B-Cell_H.Pylori.tiff", Hpylori.plot, device = "tiff", units="in", width=8, height=6)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_B-Cell_H.Pylori.pdf", Hpylori.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+
+# # # Visualise Clusters
+# Global.cell.types<-ggplot(data.frame(UMAP1 = umap.data[,1],
+#                                      UMAP2 = umap.data[,2],
+#                                      Cell_type = factor(sce$Celltypes_global, levels = names(cell.order)))) +
+#   geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+#   geom_point(aes(UMAP1, UMAP2, colour = Cell_type), size = 0.5) +
+#   theme_void() +
+#   ylim(umap.min.max) +
+#   xlim(umap.min.max) +
+#   geom_text(data= aggregate(umap.data, list(sce$Celltypes_global), mean),
+#             mapping = aes(V1, V2, label = Group.1), colour = "black", size = 6)
+# 
+# 
+# print(Global.cell.types)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names_B-Cell_new_correction.tiff", Global.cell.types, device = "tiff", units="in", width=8, height=6)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Allumap_Cell_Global_names_B-Cell_new_correction.pdf", Global.cell.types, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+
+# 
+# # Visualise Study
+# Study.plot<-ggplot(data.frame(UMAP1 = umap.data[,1],
+#                                      UMAP2 = umap.data[,2],
+#                                      Study = factor(sce$Study))[sce$Study != "Wang",]) +
+#   geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+#   geom_point(aes(UMAP1, UMAP2, colour = Study), size = 0.5) + 
+#   theme_void() +
+#   ylim(umap.min.max) +
+#   xlim(umap.min.max) 
+# 
+# 
+# print(Study.plot)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Study_B-Cell.tiff", Study.plot, device = "tiff", units="in", width=8, height=6)
+# ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Study_B-Cell.pdf", Study.plot, device = "pdf", units="in", width=11, height=10, useDingbats = FALSE)
+# 
+
+gene<-"S100A6"
+gene.expression<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     gene = logcounts(sce)[rowData(sce)$Symbol == gene,])) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = gene), size = 0.5) + 
+  scale_colour_viridis(option = "B") +
+  theme_void() +
+  ggtitle(gene) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) 
+
+plot(gene.expression)
+
+gene<-"ENSG00000130300"
+gene.expression<-ggplot(data.frame(UMAP1 = umap.data[,1],
+                                     UMAP2 = umap.data[,2],
+                                     gene = logcounts(sce)[rowData(sce)$ID == gene,])) +
+  geom_point(aes(UMAP1, UMAP2), size = 1, color = "black") +
+  geom_point(aes(UMAP1, UMAP2, colour = gene), size = 0.5) + 
+  scale_colour_viridis(option = "B") +
+  theme_void() +
+  ggtitle(gene) +
+  ylim(umap.min.max) +
+  xlim(umap.min.max) 
+
+plot(gene.expression)
+
+
+```
+
+## Prepare boxplot per tissue
+
+```{r}
+# sce.tmp<-sce[,sce$Patient != "Patient21"]
+# sce.tmp<-sce[,sce$Study == "Fitz" & sce$Tissue == "GIM"]
+
+countsdata<-reshape2::melt(table(sce$Celltypes_Endothelial, paste(sce$Tissue, sce$Study, sce$Patient_type)))
+colnames(countsdata)<-c("CellType", "Tissue", "Proportion")
+countsdata<-countsdata[!countsdata$Tissue %in% c( "Ileum Wang Healthy", "Colon Wang Healthy", "Rectum Wang Healthy"),]
+# countsdata$Cluster<-factor(countsdata$CellType, levels = )
+countsdata$Tissue <- factor(countsdata$Tissue, levels = c("NE Fitz Healthy", "SMG Fitz Healthy", "NSCJ Fitz Healthy", "NG Fitz Healthy", "ND Fitz Healthy", "NGB Ji Healthy", "NE Fitz Diseased", "NG Fitz Diseased", "GM Fitz Diseased", "BE Fitz Diseased", "BSCJ Fitz Diseased", "NAG Li Diseased", "CAG Li Diseased", "CIM Fitz Diseased", "GIM Fitz Diseased", "GIM Li Diseased"))
+# countsdata<-countsdata[!(countsdata$Tissue %in%   c("NE")),]
+countsdata$CellType <- factor(countsdata$CellType, levels = levels(countsdata$CellType)[c(2:3,6:7,1, 4:5)])
+
+
+boxplot.celltypes<-ggplot(data = countsdata, aes(x = Tissue, y = Proportion, fill = CellType, label = Proportion)) + 
+  geom_bar(position = "fill", stat = "identity") + 
+  theme_cowplot(12) +  
+  # scale_x_discrete(limits=rev) +
+  geom_text(aes(label = ifelse(Proportion <= 0 , NA, Proportion)), stat='identity', position=position_fill(vjust = .5), size = 4)
+plot(boxplot.celltypes)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Barchart_Endothelial.pdf", boxplot.celltypes, device = "pdf", units="in", width=18, height=6, useDingbats = FALSE)
+```
+
+## Final Figure
+
+```{r}
+lay <- rbind(c(1,2),
+             c(4,4),
+             # c(4,4),
+             c(4,4))
+multiplot<-gridExtra::grid.arrange(grobs = list(Cell.plot, tissues.plot, boxplot.celltypes+ coord_flip() ), layout_matrix = lay)
+ggsave("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Figures/Figure_Immune/Multiplot_Endothelial.pdf", multiplot, device = "pdf", units="cm", width=21, height=29.7, useDingbats = FALSE)  #210 x 297
+```
+
+# End Matter
+
+To finish get session info:
+
+```{r Endnote, include=TRUE, echo=TRUE, warning=FALSE, eval=TRUE, message=FALSE, tidy=TRUE}
+sessionInfo()
+```

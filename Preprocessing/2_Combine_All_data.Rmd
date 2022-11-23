@@ -1,0 +1,793 @@
+---
+title: "Batch correction across tissues and patients"
+author: "Karol Nowicki-Osuch"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: paper
+    code_folding: hide
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# Rscript -e "library(rmarkdown); render('Rebuttal_All.Rmd')"
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read in the data
+
+```{r libraries, message=FALSE}
+library(scran)
+library(scater)
+# library(DropletUtils)
+library(openxlsx)
+library(Rtsne)
+library(umap)
+library(RColorBrewer)
+library(viridis)
+library(cowplot)
+library(pheatmap)
+library(Seurat)
+source("~/Dropbox/Postdoc/git/Gastric_IM//Analysis/Functions/auxiliary.R")
+library(foreach)
+library(doParallel)
+```
+
+# Combine data
+
+Here I will combine processe data from our and Li studies. I will also introduce some metadata for sample tracking. 
+
+```{r combine, eval=TRUE}
+sce.list.our <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_filtered_10x.rds")
+sce.list.Li<- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_filtered_Li_manual.rds")
+sce.list.Wang <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_filtered_Wang.rds")
+sce.list.Ji <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_filtered_Ji_manual.rds")
+
+common.genes<-Reduce(intersect, list(rowData(sce.list.Ji[[1]])$ID,
+                                     rowData(sce.list.our[[1]])$ID))
+
+
+# Fix row table for Li data
+sce.list.Ji <- lapply(sce.list.Ji, function(n){
+  rowData(n) <- rowData(n)[,1:2] # Keep only two columns about gene name
+  n <- n[common.genes,] # Keep only genes that are common
+  n
+})
+
+# Fix row table for our data
+sce.list.our <- lapply(sce.list.our, function(n){
+  rowData(n) <- rowData(n)[,1:2] # Keep only two columns about gene name
+  n <- n[common.genes,] # Keep only genes that are common
+  rowData(n)$Symbol <- rowData(sce.list.Ji[[1]])$Symbol # Ji data seem to have the latest names for very few protein coding genes
+  n
+})
+
+# Fix row table for Wang data
+sce.list.Wang <- lapply(sce.list.Wang, function(n){
+  rowData(n) <- rowData(n)[,1:2] # Keep only two columns about gene name
+  n <- n[common.genes,] # Keep only genes that are common
+  rowData(n)$Symbol <- rowData(sce.list.Ji[[1]])$Symbol # Ji data seem to have the latest names for very few protein coding genes
+  n
+})
+
+# Fix row table for Li data
+sce.list.Li <- lapply(sce.list.Li, function(n){
+  rowData(n) <- rowData(n)[,1:2] # Keep only two columns about gene name
+  n <- n[common.genes,] # Keep only genes that are common
+  rowData(n)$Symbol <- rowData(sce.list.Ji[[1]])$Symbol # Ji data seem to have the latest names for very few protein coding genes
+  n
+})
+
+
+
+
+
+
+
+# Add study to our data
+for (n in names(sce.list.our)) {
+  colData(sce.list.our[[n]])$Study <- "Fitz" # Add study name to fitz data
+  colData(sce.list.our[[n]])$Time <- "0h"
+  colData(sce.list.our[[n]])$Celltypes <- "NA"
+  
+}
+
+
+# Fix column table for Li data
+for (n in names(sce.list.Li)) {
+  colData(sce.list.Li[[n]])$Study <- "Li" # Add study name to fitz data
+  colData(sce.list.Li[[n]])$Time <- "0h"
+  colData(sce.list.Li[[n]])$Celltypes <- "NA"
+  
+}
+
+# Add study to Wang data
+for (n in names(sce.list.Wang)) {
+  colData(sce.list.Wang[[n]])$Study <- "Wang" # Add study name to fitz data
+  colData(sce.list.Wang[[n]])$Time <- "0h"
+  colData(sce.list.Wang[[n]])$Celltypes <- "NA"
+  
+}
+
+# Add study to Ji data
+for (n in names(sce.list.Ji)) {
+  colData(sce.list.Ji[[n]])$Study <- "Ji" # Add study name to fitz data
+  colData(sce.list.Ji[[n]])$Time <- "0h"
+  colData(sce.list.Ji[[n]])$Celltypes <- "NA"
+  
+}
+
+# Remove metadata from our data
+for (n in names(sce.list.our)) {
+  metadata(sce.list.our[[n]])<-list()
+}
+
+# Remove metadata from Wang data
+for (n in names(sce.list.Wang)) {
+  metadata(sce.list.Wang[[n]])<-list()
+}
+
+# Remove metadata from Li data
+for (n in names(sce.list.Li)) {
+  metadata(sce.list.Li[[n]])<-list()
+}
+
+# Remove metadata from Ji data
+for (n in names(sce.list.Ji)) {
+  metadata(sce.list.Ji[[n]])<-list()
+}
+
+# Create list of all data
+sce.list <- c(sce.list.our, sce.list.Li, sce.list.Wang, sce.list.Ji)
+
+# Combine sce objects
+sce <- do.call("cbind", sce.list)
+
+# Fix coldata that are factors into characters
+i <- sapply(colData(sce), is.factor)
+colData(sce)[i] <- lapply(colData(sce)[i], as.character)
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce.rds")
+
+
+```
+
+# Read and remove low quality samples
+
+To be removed: 
+1 Cancer sample from Li study
+1 NG sample from Patient12 - it has unknown phenotype
+1 NG sample from Patient05 - it has unknown phenotype
+
+```{r fix-data, eval=TRUE}
+
+# sce <- readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce.rds")
+
+
+# Identify patients from which IM/BE samples were collected and introduce new column to track this informaiton
+sce$Patient_type <- ifelse(sce$Patient %in% unique(sce$Patient[sce$Tissue %in% c("BE", "GM", "CIM", "GIM", "NAG", "CAG")]), "Diseased", "Healthy")
+sce$Patient_type[sce$Tissue == "ND"] <- "Healthy"
+sce$Patient_status <- "Healthy"
+sce$Patient_status[sce$Patient %in% unique(sce$Patient[sce$Tissue %in% c("BE", "GM")])] <- "BE"
+sce$Patient_status[sce$Patient %in% unique(sce$Patient[sce$Tissue %in% c("CIM", "GIM", "NAG", "CAG")])] <- "IM"
+sce$Patient_status[sce$Tissue == "ND"] <- "Healthy"
+
+# remove samples that are known to be of low quality or not important for analysis
+sce <- sce[,!((sce$Patient %in% c("Patient05", "Patient12") & sce$Tissue == "NG"))]
+
+# Fix the NG sample in patient 22
+sce$Tissue[sce$Tissue == "NG" & sce$Patient == "Patient22"]<-"CIM"
+
+#Introduce MT content
+MT_genes <- read.table("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Additional_files/MT_genes.txt", sep = "\t", header = TRUE)
+colData(sce)$MT.prop <- Matrix::colSums(counts(sce[rowData(sce)$ID %in% MT_genes$Gene.stable.ID,]))/
+  (sce$total)*100
+
+
+
+sce<-addPerFeatureQC(sce)
+
+# Batch normalization
+sce<-batchelor::multiBatchNorm(sce, batch = sce[["Sample"]])
+
+# ################## 
+# # Introduce cell types from earleir analysis
+# sce.all<-readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_selected_corrected_withWang.rds")
+# 
+# sce$Celltypes20210625<-"NA"
+# sce$Tissuetypes20210625<-"NA"
+# matches <- match(paste(sce.all$Sample, sce.all$Barcode) ,paste(sce$Sample, sce$Barcode))
+# matches<-matches[!is.na(matches)]
+# matches2<-match(paste(sce$Sample, sce$Barcode) ,paste(sce.all$Sample, sce.all$Barcode))
+# matches2<-matches2[!is.na(matches2)]
+# sce$Celltypes20210625[matches] <- sce.all$Celltypes20210625[matches2]
+# sce$Tissuetypes20210625[matches] <- sce.all$Tissuetypes20210625[matches2]
+
+# Save the object
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected.rds")
+
+```
+
+
+# Perform batch correction
+
+Here, I will perform batch correction across all samples. I treat each sample as an independent batch. They are sorted by the size of each sample.
+
+
+```{r batch-correction-umap}
+##############################################
+sce<-readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected.rds")
+
+# Batch normalization
+sce<-batchelor::multiBatchNorm(sce, batch = sce[["Sample"]])
+
+
+batch.order.names<-list()
+length(batch.order.names) <- length(unique(paste(sce$Tissue, sce$Study, sep = "_")))
+names(batch.order.names) <- c("NE_Fitz", "NSCJ_Fitz", "NG_Fitz", "NGB_Ji", "ND_Fitz", "SMG_Fitz",  "BSCJ_Fitz", "GM_Fitz", "BE_Fitz","CIM_Fitz", "GIM_Fitz", "NAG_Li", "CAG_Li", "GIM_Li", "Ileum_Wang", "Colon_Wang", "Rectum_Wang")
+
+for (n in names(batch.order.names)) {
+  batch.order.names[[n]]<-c(names(sort(table(sce$Sample[paste(sce$Tissue, sce$Study, sep = "_") == n]), decreasing = TRUE)))
+}
+
+corrected <- batch.correction.single(sce, batches = "Sample", m.order = batch.order.names, number.HVG = 2000)
+
+# Save batch corrected counts in metdata
+metadata(sce)$corrected_2000 <- corrected
+
+# Compute tsne on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+corrected<-metadata(sce)$corrected_2000 
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+stopCluster(cl)
+
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce)<-lapply(results, function (x) {x$layout[,1:2]})
+
+
+# Clustering on corrected data
+g <- buildSNNGraph(corrected, k = 10)
+clusters <- igraph::cluster_louvain(g)$membership
+
+
+colour.palet <- c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))[1:length(unique(sce$Tissue))]
+names(colour.palet) <- sort(unique(sce$Tissue))
+
+# Visualise tissues
+print(ggplot(data.frame(UMAP1 = results[[3]]$layout[,1],
+                        UMAP2 = results[[3]]$layout[,2],
+                        tissue = as.factor(colData(sce)$Tissue))) + 
+        geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+        theme_cowplot(12) +
+        # xlim(c(-20, 20))+
+        # ylim(c(floor(min(umap$layout)), ceiling(max(umap$layout)))) +
+        # xlim(c(floor(min(umap$layout)), ceiling(max(umap$layout)))) +
+        # scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+        scale_color_manual(values = colour.palet))
+
+
+print(ggplot(data.frame(UMAP1 = results[[2]]$layout[,1],
+                        UMAP2 = results[[2]]$layout[,2],
+                        tissue = as.factor(colData(sce)$Study))) + 
+        geom_point(aes(UMAP1, UMAP2, colour = tissue), size = 0.5) + 
+        theme_cowplot(12)# +
+      # ylim(c(floor(min(umap$layout)), ceiling(max(umap$layout)))) +
+      # xlim(c(floor(min(umap$layout)), ceiling(max(umap$layout))))# +
+      # scale_color_manual(values = c(brewer.pal(9, "Set1"), brewer.pal(9, "Set3"))))
+      # scale_color_manual(values = colour.palet))
+)
+
+# Visualise cluster
+print(ggplot(data.frame(UMAP1 = results[[3]]$layout[,1],
+                        UMAP2 = results[[3]]$layout[,2],
+                        clusters = as.factor(clusters))) + 
+        theme_cowplot(12) +
+        # ylim(c(floor(min(umap$layout)), ceiling(max(umap$layout)))) +
+        # xlim(c(floor(min(umap$layout)), ceiling(max(umap$layout)))) +
+        geom_point(aes(UMAP1, UMAP2, colour = clusters), size = 0.5)
+)
+
+# Visualise cluster
+print(ggplot(data.frame(UMAP1 = results[[2]]$layout[,1],
+                        UMAP2 = results[[2]]$layout[,2],
+                        clusters = as.factor(sce$Celltypes20210625))) + 
+        theme_cowplot(12) +
+        # ylim(c(floor(min(umap$layout)), ceiling(max(umap$layout)))) +
+        # xlim(c(floor(min(umap$layout)), ceiling(max(umap$layout)))) +
+        geom_point(aes(UMAP1, UMAP2, colour = clusters), size = 0.5)
+)
+
+
+
+# Save clustering in new slot
+colData(sce)$Global_cluster <- clusters
+# saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_corrected_selected.rds")
+
+
+# Perform differential expression
+markers <- findMarkers(sce, groups = colData(sce)$Global_cluster, 
+                       block = paste(colData(sce)$Patient, colData(sce)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Global_filtered/Final/Marker_genes_combined.xlsx", sep = ""))
+
+# Save the object
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected.rds")
+```
+
+
+## Incorporate cell type names from BE study
+
+```{r}
+#Get all data from the BEOrigin study. Correct the names of cell populations that might be overlapping other cell types
+# Save the object
+sce<-readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected.rds")
+sce.BE.all <-readRDS("~/Dropbox/Postdoc/2019-12-29_BE2020/All_corrected_sce_filtered.rds")
+sce.BE.all$cell_type_secondary[sce.BE.all$Tissue == "ND" & sce.BE.all$cell_type_secondary == "Undifferentiated"] <- "ND_Undifferentiated"
+sce.BE.all$cell_type_secondary[sce.BE.all$Tissue == "NG" & sce.BE.all$cell_type_secondary == "Undifferentiated"] <- "NG_Undifferentiated"
+sce.BE.all$cell_type_secondary[sce.BE.all$Tissue == "ND" & sce.BE.all$cell_type_secondary == "Undifferentiated_Dividing"] <- "ND_Undifferentiated_Dividing"
+sce.BE.all$cell_type_secondary[sce.BE.all$Tissue == "NG" & sce.BE.all$cell_type_secondary == "Undifferentiated_Dividing"] <- "NG_Undifferentiated_Dividing"
+
+# Fix patient names to match them with data from this study
+sce.BE.all$Patient2<-sce.BE.all$Patient
+sce.BE.all$Patient2[sce.BE.all$Patient2 == "Patient04"] <- "Patient15"
+sce.BE.all$Patient2[sce.BE.all$Patient2 == "Patient14"] <- "Patient19"
+sce$Celltypes_BE<-"NA"
+sce$Celltypes_BE_secondary<-"NA"
+sce$TissueType_BE <-"NA"
+matches<-match(paste(sce.BE.all$Patient2, sce.BE.all$Tissue, sce.BE.all$Barcode, sep = "_"), paste(sce$Patient, sce$Tissue, sce$Barcode, sep = "_") )
+matches<-matches[!is.na(matches)]
+matches2<-match(paste(sce$Patient, sce$Tissue, sce$Barcode, sep = "_"), paste(sce.BE.all$Patient2, sce.BE.all$Tissue, sce.BE.all$Barcode, sep = "_") )
+matches2<-matches2[!is.na(matches2)]
+sce$Celltypes_BE[matches] <- sce.BE.all$cell_type[matches2]
+sce$Celltypes_BE_secondary[matches] <- sce.BE.all$cell_type_secondary[matches2]
+sce$TissueType_BE[matches] <- sce.BE.all$tissue_type[matches2]
+
+cell.order<-c(
+  "Basal",
+  "Suprabasal",
+  "Suprabasal_Dividing",
+  "Intermediate",              
+  "Superficial",             
+  
+  "KRT5_cells",
+  "KRT5.KRT7_cells",
+  "KRT7_cells",
+  "MUC5B_cells",  
+  
+  "Undifferentiated",
+  "NG_Undifferentiated",
+  "NG_Undifferentiated_Dividing",
+  "Foveolar_Intermediate",
+  "Foveolar_differentiated",
+  "Endocrine_CHGA",
+  "Endocrine_GHRL", 
+  "Endocrine_NEUROD1",
+  "Chief",        
+  "Parietal",
+  
+  "Columnar_Undifferentiated",
+  "Columnar_Undifferentiated_Dividing",
+  "Columnar_Intermediate",
+  "Columnar_differentiated",           
+  "Goblet",
+  "Endocrine_NEUROG3",
+  "Unknown.Doublets",   
+  
+  "ND_Undifferentiated",
+  "ND_Undifferentiated_Dividing",
+  "Enterocytes_Intermediate",
+  "Enterocytes_differentiated",
+  "Paneth",
+  
+  "Duct_Intercalating",
+  "Oncocytes_MUC5B_Low", 
+  "Mucous_MUC5B_High",
+  "Myo-epithelial",
+  
+  "Squamous_Esophagus",
+  
+  "Stromal_GNG11_cells",
+  "Stromal_CALD1_cells",   
+  "Stromal_ADH1B_cells",
+  
+  "Immune_T-cells",
+  "Immune_Macrophages",
+  "Immune_B-cells"
+  
+)
+# Save the object
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected.rds")
+
+```
+
+
+## Prepare data for visualisation
+
+```{r}
+
+sce.visualize<-sce
+logcounts(sce.visualize)<-NULL
+# randomise expression values nad moved htem to log2 space
+counts(sce.visualize)<-logcounts(sce)#[,jumbled]
+
+# Move Symbol to row name to keep it easy to loead into the data
+rownames(sce.visualize)<-rowData(sce.visualize)$Symbol
+
+colData(sce.visualize)<-colData(sce.visualize)[,c(4, 3, 1, 10:14, 16, 17,  19:22, 18, 8:9, 15)]
+for(n in 1:14) {
+  colData(sce.visualize)[,n] <-  as.factor(colData(sce.visualize)[,n])
+}   
+
+for(n in 16:17) {
+  colData(sce.visualize)[,n] <- log2(colData(sce.visualize)[,n] )
+}
+
+levels(sce.visualize$Celltypes_BE_secondary)[21:24]<-paste0("C", 1:4)
+
+#randomise data
+set.seed(50014)
+jumbled<-sample(ncol(sce.visualize), replace = FALSE)
+sce.visualize<-sce.visualize[,jumbled]
+
+
+
+sceasy::convertFormat(sce.visualize, from="sce", to="anndata",
+                      outFile="/home/karolno/Dropbox/Postdoc/2021-05-19_Gastric_IM/Visualisation/All_sce_selected_corrected.h5ad")
+
+saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected.rds")
+
+```
+
+
+<!-- ## Introduce global cluster -->
+
+<!-- After the above analysis (inclyding cell clustering), I then assessed cell types and them from both our work in Science and from Elo's work. There were some errors in both analysis. -->
+
+<!-- Let's introduce the data into the single cell objects and produce a new visualisaiton -->
+
+<!-- ```{r} -->
+<!-- #Read cell types -->
+
+<!-- reannot.clusters<-read.delim("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Additional_files/CellType_Global_clusters_20210625.txt") -->
+
+<!-- sce$Celltypes20210625<-reannot.clusters$CellType[match(sce$Global_cluster, reannot.clusters$GlobalCluster)] -->
+<!-- sce$Tissuetypes20210625<-reannot.clusters$Type[match(sce$Global_cluster, reannot.clusters$GlobalCluster)] -->
+<!-- sce$Exclude20210625<-reannot.clusters$Exclude[match(sce$Global_cluster, reannot.clusters$GlobalCluster)] -->
+
+<!-- sce.visualize$Celltypes20210625<-as.factor(reannot.clusters$CellType[match(sce.visualize$Global_cluster, reannot.clusters$GlobalCluster)]) -->
+<!-- sce.visualize$Tissuetypes20210625<-as.factor(reannot.clusters$Type[match(sce.visualize$Global_cluster, reannot.clusters$GlobalCluster)]) -->
+<!-- sce.visualize$Exclude20210625<-reannot.clusters$Exclude[match(sce.visualize$Global_cluster, reannot.clusters$GlobalCluster)] -->
+
+<!-- saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_selected_corrected_withWang.rds") -->
+
+<!-- sceasy::convertFormat(sce.visualize, from="sce", to="anndata", -->
+<!--                       outFile="/home/karolno/Dropbox/Postdoc/2021-05-19_Gastric_IM/for_visualisation_withWang.h5ad") -->
+
+
+<!-- ``` -->
+
+
+## Recompute umap after removal of clusters 20 and 22 
+
+Cluster 20 and 22 - Most cells in these clusters seem to be real cells but they are also contaminated by cells with large amount of ribosomal reads. I will remove only these cells from tehse clusters and see how they behave. 
+
+```{r}
+#Read cell types
+sce.selected<-sce[,!(sce$Global_cluster %in% c(20, 22))]
+metadata(sce.selected)$corrected_2000<-NULL
+
+rowData(sce.selected)<-rowData(sce.selected)[,1:2]
+# Batch normalization
+sce.selected<-batchelor::multiBatchNorm(sce.selected, batch = sce.selected[["Sample"]])
+
+sce.selected<-addPerFeatureQC(sce.selected)
+
+batch.order.names<-list()
+length(batch.order.names) <- length(unique(paste(sce.selected$Tissue, sce.selected$Study, sep = "_")))
+names(batch.order.names) <- c("NE_Fitz", "NSCJ_Fitz", "NG_Fitz", "NGB_Ji", "ND_Fitz", "SMG_Fitz",  "BSCJ_Fitz", "GM_Fitz", "BE_Fitz","CIM_Fitz", "GIM_Fitz", "NAG_Li", "CAG_Li", "GIM_Li", "Ileum_Wang", "Colon_Wang", "Rectum_Wang")
+
+for (n in names(batch.order.names)) {
+  batch.order.names[[n]]<-c(names(sort(table(sce.selected$Sample[paste(sce.selected$Tissue, sce.selected$Study, sep = "_") == n]), decreasing = TRUE)))
+}
+
+corrected <- batch.correction.single(sce.selected, batches = "Sample", m.order = batch.order.names, number.HVG = 2000)
+
+# Save batch corrected counts in metdata
+metadata(sce.selected)$corrected_2000 <- corrected
+# saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_corrected_2000_selected.rds")
+# sce<-readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_corrected_2000_selected.rds")
+
+# Compute tsne on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+corrected<-metadata(sce.selected)$corrected_2000 
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+#foreach(j=c(15, 100)) %:%
+stopCluster(cl)
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce.selected)<-lapply(results, function (x) {x$layout[,1:2]})
+
+
+
+
+# Clustering on corrected data
+g <- buildSNNGraph(corrected, k = 10)
+clusters <- igraph::cluster_louvain(g)$membership
+
+
+# Save clustering in new slot
+colData(sce.selected)$Global_cluster_selected <- clusters
+# saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_corrected_selected.rds")
+
+
+# Perform differential expression
+markers <- findMarkers(sce.selected, groups = colData(sce.selected)$Global_cluster_selected, 
+                       block = paste(colData(sce.selected)$Patient, colData(sce.selected)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Global_filtered/Marker_genes_combined_clean.xlsx", sep = ""))
+
+
+
+saveRDS(sce.selected, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion.rds")
+
+```
+
+## Prepare data for visualisation
+
+```{r}
+sce.selected<-readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion.rds")
+
+
+sce.visualize<-sce.selected
+logcounts(sce.visualize)<-NULL
+# randomise expression values nad moved htem to log2 space
+counts(sce.visualize)<-logcounts(sce.selected)#[,jumbled]
+
+# Move Symbol to row name to keep it easy to loead into the data
+rownames(sce.visualize)<-rowData(sce.visualize)$Symbol
+
+colData(sce.visualize)<-colData(sce.visualize)[,c(4, 3, 1, 10:14, 16, 17,  19:23, 18, 8:9, 15)]
+for(n in 1:(ncol(colData(sce.visualize))-4)) {
+  colData(sce.visualize)[,n] <-  as.factor(colData(sce.visualize)[,n])
+}   
+
+for(n in (ncol(colData(sce.visualize))-3):(ncol(colData(sce.visualize))-1)) {
+  colData(sce.visualize)[,n] <- log2(colData(sce.visualize)[,n] )
+}
+
+levels(sce.visualize$Celltypes_BE_secondary)[21:24]<-paste0("C", 1:4)
+
+#randomise data
+set.seed(50014)
+jumbled<-sample(ncol(sce.visualize), replace = FALSE)
+sce.visualize<-sce.visualize[,jumbled]
+
+
+
+sceasy::convertFormat(sce.visualize, from="sce", to="anndata",
+                      outFile="/home/karolno/Dropbox/Postdoc/2021-05-19_Gastric_IM/Visualisation/All_sce_selected_corrected_after_exclusion.h5ad")
+
+```
+
+## Recompute umap after removal of new Cluster 1 (mt RNA heavy)
+
+Cluster 1 - Most cells in these clusters have very high mt count and there are only 100 cells in it. 
+
+
+```{r}
+#Read cell types
+sce.selected<-sce.selected[,!(sce.selected$Global_cluster_selected %in% c(1))]
+metadata(sce.selected)$corrected_2000<-NULL
+
+rowData(sce.selected)<-rowData(sce.selected)[,1:2]
+# Batch normalization
+sce.selected<-batchelor::multiBatchNorm(sce.selected, batch = sce.selected[["Sample"]])
+
+sce.selected<-addPerFeatureQC(sce.selected)
+
+batch.order.names<-list()
+length(batch.order.names) <- length(unique(paste(sce.selected$Tissue, sce.selected$Study, sep = "_")))
+names(batch.order.names) <- c("NE_Fitz", "NSCJ_Fitz", "NG_Fitz", "NGB_Ji", "ND_Fitz", "SMG_Fitz",  "BSCJ_Fitz", "GM_Fitz", "BE_Fitz","CIM_Fitz", "GIM_Fitz", "NAG_Li", "CAG_Li", "GIM_Li", "Ileum_Wang", "Colon_Wang", "Rectum_Wang")
+
+for (n in names(batch.order.names)) {
+  batch.order.names[[n]]<-c(names(sort(table(sce.selected$Sample[paste(sce.selected$Tissue, sce.selected$Study, sep = "_") == n]), decreasing = TRUE)))
+}
+
+corrected <- batch.correction.single(sce.selected, batches = "Sample", m.order = batch.order.names, number.HVG = 2000)
+
+# Save batch corrected counts in metdata
+metadata(sce.selected)$corrected_2000 <- corrected
+# saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_corrected_2000_selected.rds")
+# sce<-readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_corrected_2000_selected.rds")
+
+# Compute tsne on corrected counts
+set.seed(50014)
+# tsne <- Rtsne(t(corrected), pca = FALSE)
+
+cl <- makeCluster(7) #not to overload your computer
+registerDoParallel(cl)
+
+corrected<-metadata(sce.selected)$corrected_2000 
+results <-  foreach(i=c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5)) %dopar% {
+  tmp.umap = umap::umap(t(corrected), min_dist = i, n_neighbors = 15) #calling a function
+  #do other things if you want
+  return(tmp.umap) 
+}
+#foreach(j=c(15, 100)) %:%
+stopCluster(cl)
+
+names(results)<-paste("umap_MinDist", c(0.01, 0.05, 0.1, 0.2, 0.3, 0.4, 0.5), "N_Neighbors", 15, sep= "_" )
+reducedDims(sce.selected)<-lapply(results, function (x) {x$layout[,1:2]})
+
+
+
+
+# Clustering on corrected data
+g <- buildSNNGraph(corrected, k = 10)
+clusters <- igraph::cluster_louvain(g)$membership
+
+
+# Save clustering in new slot
+colData(sce.selected)$Global_cluster_selected <- clusters
+# saveRDS(sce, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_corrected_selected.rds")
+
+
+# Perform differential expression
+markers <- findMarkers(sce.selected, groups = colData(sce.selected)$Global_cluster_selected, 
+                       block = paste(colData(sce.selected)$Patient, colData(sce.selected)$Tissue, sep = "_"))
+
+
+markers.spec <- lapply(markers, function(n){
+  if(!is.na(n$Top[1]) & !is.nan(sum(as.matrix(n[1,4:ncol(n)])))){
+    test_n <- !is.na(n[1,4:ncol(n)])[1,]
+    cur_n <- n[n$FDR < 0.1 & apply(n[,4:ncol(n)], 1, function(x){sum(x[test_n] > 0)}) == sum(test_n),]
+    if(nrow(cur_n) > 0){
+      cur_n$GeneName <- rowData(sce)$Symbol[match(rownames(cur_n), rowData(sce)$ID)]
+    }
+  }
+  else{
+    cur_n <- NULL
+  }
+  cur_n
+})
+
+# Save clustering results
+write.xlsx(markers.spec, paste("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Results/Marker_genes/Global_filtered/Marker_genes_combined_clean_after_exclusion2.xlsx", sep = ""))
+
+
+
+saveRDS(sce.selected, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion2.rds")
+
+```
+
+## Prepare data for visualisation
+
+```{r}
+sce.selected<-readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion2.rds")
+
+
+sce.visualize<-sce.selected
+logcounts(sce.visualize)<-NULL
+# randomise expression values nad moved htem to log2 space
+counts(sce.visualize)<-logcounts(sce.selected)#[,jumbled]
+
+# Move Symbol to row name to keep it easy to loead into the data
+rownames(sce.visualize)<-rowData(sce.visualize)$Symbol
+
+colData(sce.visualize)<-colData(sce.visualize)[,c(4, 3, 1, 10:14, 16, 17,  19:23, 18, 8:9, 15)]
+for(n in 1:(ncol(colData(sce.visualize))-4)) {
+  colData(sce.visualize)[,n] <-  as.factor(colData(sce.visualize)[,n])
+}   
+
+for(n in (ncol(colData(sce.visualize))-3):(ncol(colData(sce.visualize))-1)) {
+  colData(sce.visualize)[,n] <- log2(colData(sce.visualize)[,n] )
+}
+
+levels(sce.visualize$Celltypes_BE_secondary)[21:24]<-paste0("C", 1:4)
+
+#randomise data
+set.seed(50014)
+jumbled<-sample(ncol(sce.visualize), replace = FALSE)
+sce.visualize<-sce.visualize[,jumbled]
+
+
+
+sceasy::convertFormat(sce.visualize, from="sce", to="anndata",
+                      outFile="/home/karolno/Dropbox/Postdoc/2021-05-19_Gastric_IM/Visualisation/All_sce_selected_corrected_after_exclusion2.h5ad")
+
+```
+
+## Introduce global cluster names after removal of doublets
+
+After the above analysis (inclyding cell clustering), I then assessed cell types and them from both our work in Science and from Elo's work. There were some errors in both analysis.
+
+Let's introduce the data into the single cell objects and produce a new visualisaiton
+
+```{r}
+#Read cell types
+sce.selected<-readRDS("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_selected_corrected_witout_Sanger_with_Ji_after_exclusion2.rds")
+
+reannot.clusters<-read.delim("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Additional_files/CellType_Global_clusters_20210702.txt")
+
+sce.selected$Celltypes_global<-reannot.clusters$CellType[match(sce.selected$Global_cluster_selected, reannot.clusters$GlobalCluster)]
+sce.selected$Tissuetypes_global<-reannot.clusters$Type[match(sce.selected$Global_cluster_selected, reannot.clusters$GlobalCluster)]
+sce.selected$Exclude_global<-reannot.clusters$Exclude[match(sce.selected$Global_cluster_selected, reannot.clusters$GlobalCluster)]
+
+sce.visualize$Celltypes_global<-as.factor(reannot.clusters$CellType[match(sce.visualize$Global_cluster_selected, reannot.clusters$GlobalCluster)])
+sce.visualize$Tissuetypes_global<-as.factor(reannot.clusters$Type[match(sce.visualize$Global_cluster_selected, reannot.clusters$GlobalCluster)])
+sce.visualize$Exclude_global<-reannot.clusters$Exclude[match(sce.visualize$Global_cluster_selected, reannot.clusters$GlobalCluster)]
+
+saveRDS(sce.selected, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_selected_corrected_after_exclusion2.rds")
+
+sceasy::convertFormat(sce.visualize, from="sce", to="anndata",
+                      outFile="/home/karolno/Dropbox/Postdoc/2021-05-19_Gastric_IM/Visualisation/All_sce_selected_corrected_after_exclusion2.h5ad")
+
+```
+
+
+
+# End Matter
+
+To finish get session info:
+
+```{r Endnote, include=TRUE, echo=TRUE, warning=FALSE, eval=TRUE, message=FALSE, tidy=TRUE}
+sessionInfo()
+```
+

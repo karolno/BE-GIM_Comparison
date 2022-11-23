@@ -1,0 +1,473 @@
+---
+title: "Quality Control of Kumar et al."
+author: "Karol Nowicki-Osuch"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: paper
+    code_folding: hide
+# knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, 
+#         encoding = encoding, output_file = '~/Dropbox/Postdoc/2019-10-29_Gastric_IM/Results/Reports/1.4_Filtering.html') })
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# export RSTUDIO_PANDOC=/usr/lib/rstudio-server/bin/pando
+# Rscript -e "library(rmarkdown); render('1_Quality_control_alt.Rmd')"
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read in the data
+
+We loop trough the folders containing the filtered matrix files, barcodes and genenames to read in the data in form of SingleCellExperiment (sce) objects.
+
+Data originates from https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE183904
+
+https://aacrjournals.org/cancerdiscovery/article/12/3/670/681898/Single-Cell-Atlas-of-Lineage-States-Tumor
+
+
+```{r libraries, message=FALSE}
+library(scran)
+library(scater)
+library(DropletUtils)
+library(ggplot2)
+library(Matrix)
+library(cowplot)
+library(openxlsx)
+library(knitr)
+library(data.table)
+set.seed(100)
+
+```
+
+
+
+```{r additional_files}
+MT_genes <- read.table("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Additional_files/MT_genes.txt", sep = "\t", header = TRUE)
+patient_metadata <- read.table("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Data_Tan/Metadata.txt", sep = "\t", header = TRUE, row.names = 1)
+sample_metadata <- read.table("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Data_Tan/Samples.txt", sep = "\t", header = TRUE, row.names = 1)
+
+```
+
+## Tumor samples
+
+```{r tumor_data, eval=TRUE}
+files <- list.files("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Data_Tan/", full.names = TRUE, pattern = ".gz")
+files.names <- list.files("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Data_Tan/", full.names = FALSE, pattern = ".gz")
+
+# Initialization of list to store sce objects
+# Uncommand this when no other list exists
+sce.list.tumor <- list()
+sce.list.filtered.tumor <- list()
+# If other samples have already been analysed, load in list containing previous samples
+# sce.list <- readRDS("PATH/TO/FILE")
+
+# Read in the data fro tumor samples
+for(i in 1:length(files)){
+  # i<-2
+  title.name <- files.names[i]
+  GSM.name <- unlist(strsplit(title.name, "_"))[1]
+  sample.name <- paste(unlist(strsplit(title.name, "_|\\.", perl = T))[2:3], collapse = ".")
+  
+  if(sample.name %in% names(sce.list.tumor) | !sample.name %in% sample_metadata$Primary_Tumor){
+    # print(sample.name)
+    # print("fail")
+    next
+    # }  else if (!sample.name %in% sample_metadata$Primary_Tumor) {
+    # next
+  } else
+  {
+    print(sample.name)
+    count.data <-Matrix(as.matrix(fread(files[i]),rownames=1), sparse = TRUE)
+    cur_sce<-SingleCellExperiment(assays=list(counts=count.data))
+    colData(cur_sce)$Patient <- rownames(sample_metadata)[sample_metadata$Primary_Tumor == sample.name]
+    colData(cur_sce)$Tissue <- "Gastric_Tumor"
+    colData(cur_sce)$Cancer_type <- patient_metadata[colData(cur_sce)$Patient,"Laurens"]
+    colData(cur_sce)$Stage <- patient_metadata[colData(cur_sce)$Patient,"Stage."]
+    colData(cur_sce)$Location <- patient_metadata[colData(cur_sce)$Patient,"Location"]
+    colData(cur_sce)$IM.Status <- patient_metadata[colData(cur_sce)$Patient,"IM.Status"]
+    colData(cur_sce)$MMR_Status <- patient_metadata[colData(cur_sce)$Patient,"MMR"]
+    colData(cur_sce)$Sample <- GSM.name
+    MT.prop <- Matrix::colSums(counts(cur_sce)[rownames(cur_sce) %in% MT_genes$Gene.name,])/
+      Matrix::colSums(counts(cur_sce))*100
+    colData(cur_sce)$MT.prop <- MT.prop
+    ##
+    colData(cur_sce)$Barcode <- colnames(cur_sce)
+    
+    colData(cur_sce)$Batch <- NA
+    
+    colData(cur_sce)$Sample_Barcode <- NA
+    colData(cur_sce)$Study <- "Kumar at al. 2022"
+    colData(cur_sce)$Patient_type <- "Diseased"
+    colData(cur_sce)$Patient_status <- "Gastric Cancer"
+    colData(cur_sce)$sizeFactor <- NA
+    colData(cur_sce)$Global_cluster_selected  <- NA
+    colData(cur_sce)$Celltypes_global <- NA
+    colData(cur_sce)$Tissuetypes_global  <- NA
+    colData(cur_sce)$Detailed_Cell_Type  <- NA
+    colData(cur_sce)$cell_type_ontology_term_id <- NA
+    
+    colData(cur_sce)$Assay  <- "Single Cell 5' v1"
+    colData(cur_sce)$assay_ontology_term_id <- "EFO:0011025"
+    colData(cur_sce)$tissue_ontology_term_id  <- "UBERON:0001161"
+    colData(cur_sce)$disease_ontology_term_id <- "MONDO:0001056"
+    colData(cur_sce)$Gender <- patient_metadata[colData(cur_sce)$Patient,"Gender"]
+    colData(cur_sce)$sex_ontology_term_id <- ifelse(patient_metadata[colData(cur_sce)$Patient,"Gender"] == "M", "PATO:0000384" ,"PATO:0000383")
+    colData(cur_sce)$organism_ontology_term_id <- "NCBITaxon:9606"
+    colData(cur_sce)$ethnicity_ontology_term_id <- "unknown"
+    colData(cur_sce)$development_stage_ontology_term_id <- "HsapDv:0000087"
+    colData(cur_sce)$donor_id <- rownames(sample_metadata)[sample_metadata$Primary_Tumor == sample.name]
+
+    cur_sce <- addPerCellQC(cur_sce)
+    cur_sce <- addPerFeatureQC(cur_sce)
+    # Library size
+    print(ggplot(as.data.frame(colData(cur_sce))) + 
+            geom_point(aes(1:ncol(cur_sce), log10(total))) +
+            xlab("Cells")+ ggtitle(title.name))
+    
+    # Number of genes detected
+    print(ggplot(as.data.frame(colData(cur_sce))) + 
+            geom_point(aes(1:ncol(cur_sce), detected)) +
+            xlab("Cells")+ ggtitle(title.name))
+    
+    # Mitochondrial genes
+    print(ggplot(data.frame(MT_genes = Matrix::colSums(counts(cur_sce)[rownames(cur_sce) %in%
+                                                                         MT_genes$Gene.name,])/
+                              Matrix::colSums(counts(cur_sce)))*100) +
+            geom_point(aes(1:ncol(cur_sce), MT_genes)) + 
+            ylab("% mitochondrial reads") + xlab("Cells")+ ggtitle(title.name))
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            VIM = log10(counts(cur_sce)[rownames(cur_sce) == "VIM",]))) + 
+            geom_point(aes(Total, MT.prop, colour = VIM)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    
+    
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            PTPRC = log10(counts(cur_sce)[rownames(cur_sce) == "PTPRC",]))) + 
+            geom_point(aes(Total, MT.prop, colour = PTPRC)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            KRT8 = log10(counts(cur_sce)[rownames(cur_sce) == "KRT8",]))) + 
+            geom_point(aes(Total, MT.prop, colour = KRT8)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            MUC2 = log10(counts(cur_sce)[rownames(cur_sce) == "MUC2",]))) + 
+            geom_point(aes(Total, MT.prop, colour = MUC2)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            KRT13 = log10(counts(cur_sce)[rownames(cur_sce) == "KRT13",]))) + 
+            geom_point(aes(Total, MT.prop, colour = KRT13)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            CALD1 = log10(counts(cur_sce)[rownames(cur_sce) == "CALD1",]))) + 
+            geom_point(aes(Total, MT.prop, colour = CALD1)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            TPSB2 = log10(counts(cur_sce)[rownames(cur_sce) == "TPSB2",]))) + 
+            geom_point(aes(Total, MT.prop, colour = TPSB2)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    sce.list.tumor[[sample.name]] <- cur_sce 
+    
+    sce.list.filtered.tumor[[sample.name]] <- cur_sce[, MT.prop > 0.5 &
+                                                        MT.prop < 25]
+    
+    
+  }
+}
+
+# Save list
+saveRDS(sce.list.tumor, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_unfiltered_Kumar_tumor_manual.rds")
+
+saveRDS(sce.list.filtered.tumor, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_filtered_Kumar_tumor_manual.rds")
+
+```
+
+## Normal samples
+
+```{r normal_data, eval=TRUE}
+# files <- list.files("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Data_Tan/", full.names = TRUE, pattern = ".gz")
+# files.names <- list.files("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Data_Tan/", full.names = FALSE, pattern = ".gz")
+
+# Initialization of list to store sce objects
+# Uncommand this when no other list exists
+sce.list.normal <- list()
+sce.list.filtered.normal <- list()
+# If other samples have already been analysed, load in list containing previous samples
+# sce.list <- readRDS("PATH/TO/FILE")
+
+# Read in the data fro tumor samples
+for(i in 1:length(files)){
+  # i<-2
+  title.name <- files.names[i]
+  GSM.name <- unlist(strsplit(title.name, "_"))[1]
+  sample.name <- paste(unlist(strsplit(title.name, "_|\\.", perl = T))[2:3], collapse = ".")
+  
+  if(sample.name %in% names(sce.list.normal) | !sample.name %in% sample_metadata$Primary_Normal){
+    # print(sample.name)
+    # print("fail")
+    next
+    # }  else if (!sample.name %in% sample_metadata$Primary_Normal) {
+    # next
+  } else
+  {
+    print(sample.name)
+    count.data <-Matrix(as.matrix(fread(files[i]),rownames=1), sparse = TRUE)
+    cur_sce<-SingleCellExperiment(assays=list(counts=count.data))
+    colData(cur_sce)$Patient <- rownames(sample_metadata)[sample_metadata$Primary_Normal == sample.name]
+    colData(cur_sce)$Tissue <- "Normal_Adjacent"
+    colData(cur_sce)$Cancer_type <- patient_metadata[colData(cur_sce)$Patient,"Laurens"]
+    colData(cur_sce)$Stage <- patient_metadata[colData(cur_sce)$Patient,"Stage."]
+    colData(cur_sce)$Location <- patient_metadata[colData(cur_sce)$Patient,"Location"]
+    colData(cur_sce)$IM.Status <- patient_metadata[colData(cur_sce)$Patient,"IM.Status"]
+    colData(cur_sce)$MMR_Status <- patient_metadata[colData(cur_sce)$Patient,"MMR"]
+    colData(cur_sce)$Sample <- GSM.name
+    MT.prop <- Matrix::colSums(counts(cur_sce)[rownames(cur_sce) %in% MT_genes$Gene.name,])/
+      Matrix::colSums(counts(cur_sce))*100
+    colData(cur_sce)$MT.prop <- MT.prop
+    ##
+    colData(cur_sce)$Barcode <- colnames(cur_sce)
+    
+    colData(cur_sce)$Batch <- NA
+    
+    colData(cur_sce)$Sample_Barcode <- NA
+    colData(cur_sce)$Study <- "Kumar at al. 2022"
+    colData(cur_sce)$Patient_type <- "Diseased"
+    colData(cur_sce)$Patient_status <- "Gastric Cancer"
+    colData(cur_sce)$sizeFactor <- NA
+    colData(cur_sce)$Global_cluster_selected  <- NA
+    colData(cur_sce)$Celltypes_global <- NA
+    colData(cur_sce)$Tissuetypes_global  <- NA
+    colData(cur_sce)$Detailed_Cell_Type  <- NA
+    colData(cur_sce)$cell_type_ontology_term_id <- NA
+    
+    colData(cur_sce)$Assay  <- "Single Cell 5' v1"
+    colData(cur_sce)$assay_ontology_term_id <- "EFO:0011025"
+    colData(cur_sce)$tissue_ontology_term_id  <- "UBERON:0001161"
+    colData(cur_sce)$disease_ontology_term_id <- "PATO:0000461"
+    colData(cur_sce)$Gender <- patient_metadata[colData(cur_sce)$Patient,"Gender"]
+    colData(cur_sce)$sex_ontology_term_id <- ifelse(patient_metadata[colData(cur_sce)$Patient,"Gender"] == "M", "PATO:0000384" ,"PATO:0000383")
+    colData(cur_sce)$organism_ontology_term_id <- "NCBITaxon:9606"
+    colData(cur_sce)$ethnicity_ontology_term_id <- "unknown"
+    colData(cur_sce)$development_stage_ontology_term_id <- "HsapDv:0000087"
+    colData(cur_sce)$donor_id <- rownames(sample_metadata)[sample_metadata$Primary_Normal == sample.name]
+    
+    
+    cur_sce <- addPerCellQC(cur_sce)
+    cur_sce <- addPerFeatureQC(cur_sce)
+    # Library size
+    print(ggplot(as.data.frame(colData(cur_sce))) + 
+            geom_point(aes(1:ncol(cur_sce), log10(total))) +
+            xlab("Cells")+ ggtitle(title.name))
+    
+    # Number of genes detected
+    print(ggplot(as.data.frame(colData(cur_sce))) + 
+            geom_point(aes(1:ncol(cur_sce), detected)) +
+            xlab("Cells")+ ggtitle(title.name))
+    
+    # Mitochondrial genes
+    print(ggplot(data.frame(MT_genes = Matrix::colSums(counts(cur_sce)[rownames(cur_sce) %in%
+                                                                         MT_genes$Gene.name,])/
+                              Matrix::colSums(counts(cur_sce)))*100) +
+            geom_point(aes(1:ncol(cur_sce), MT_genes)) + 
+            ylab("% mitochondrial reads") + xlab("Cells")+ ggtitle(title.name))
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            VIM = log10(counts(cur_sce)[rownames(cur_sce) == "VIM",]))) + 
+            geom_point(aes(Total, MT.prop, colour = VIM)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    
+    
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            PTPRC = log10(counts(cur_sce)[rownames(cur_sce) == "PTPRC",]))) + 
+            geom_point(aes(Total, MT.prop, colour = PTPRC)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            KRT8 = log10(counts(cur_sce)[rownames(cur_sce) == "KRT8",]))) + 
+            geom_point(aes(Total, MT.prop, colour = KRT8)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            MUC2 = log10(counts(cur_sce)[rownames(cur_sce) == "MUC2",]))) + 
+            geom_point(aes(Total, MT.prop, colour = MUC2)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            KRT13 = log10(counts(cur_sce)[rownames(cur_sce) == "KRT13",]))) + 
+            geom_point(aes(Total, MT.prop, colour = KRT13)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            CALD1 = log10(counts(cur_sce)[rownames(cur_sce) == "CALD1",]))) + 
+            geom_point(aes(Total, MT.prop, colour = CALD1)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            TPSB2 = log10(counts(cur_sce)[rownames(cur_sce) == "TPSB2",]))) + 
+            geom_point(aes(Total, MT.prop, colour = TPSB2)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    sce.list.normal[[sample.name]] <- cur_sce 
+    
+    sce.list.filtered.normal[[sample.name]] <- cur_sce[, MT.prop > 0.5 &
+                                                         MT.prop < 25]
+    
+    
+  }
+}
+
+
+# Save list
+saveRDS(sce.list.normal, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_unfiltered_Kumar_normal_manual.rds")
+
+saveRDS(sce.list.filtered.normal, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_filtered_Kumar_normal_manual.rds")
+
+```
+
+
+# End Matter
+
+To finish get session info:
+
+```{r Endnote, include=TRUE, echo=TRUE, warning=FALSE, eval=TRUE, message=FALSE, tidy=TRUE}
+sessionInfo()
+```

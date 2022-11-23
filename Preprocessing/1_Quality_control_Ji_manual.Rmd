@@ -1,0 +1,228 @@
+---
+title: "Quality Control of Wang et al."
+author: "Karol Nowicki-Osuch"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float:
+      toc_collapsed: true
+    toc_depth: 3
+    number_sections: false
+    theme: paper
+    code_folding: hide
+# knit: (function(inputFile, encoding) { rmarkdown::render(inputFile, 
+#         encoding = encoding, output_file = '~/Dropbox/Postdoc/2019-10-29_Gastric_IM/Results/Reports/1.4_Filtering.html') })
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+# export RSTUDIO_PANDOC=/usr/lib/rstudio-server/bin/pando
+# Rscript -e "library(rmarkdown); render('1_Quality_control_alt.Rmd')"
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Read in the data
+
+We loop trough the folders containing the filtered matrix files, barcodes and genenames to read in the data in form of SingleCellExperiment (sce) objects.
+
+Data originates from https://clincancerres.aacrjournals.org/content/26/11/2640.full-text.pdf
+
+Filtered data was downloaded from https://dna-discovery.stanford.edu/research/datasets/
+
+
+```{r libraries, message=FALSE}
+library(scran)
+library(scater)
+library(DropletUtils)
+library(ggplot2)
+library(Matrix)
+library(cowplot)
+library(openxlsx)
+library(knitr)
+set.seed(100)
+
+```
+
+
+
+```{r additional_files}
+MT_genes <- read.table("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Additional_files/MT_genes.txt", sep = "\t", header = TRUE)
+sample_metadata <- read.table("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Additional_files/Samples_Ji.txt", sep = "\t", header = TRUE, row.names = 1)
+```
+
+
+
+```{r data, eval=TRUE}
+folders <- list.files("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Data_Ji/gastric_scRNAseq_filtered/", full.names = TRUE)
+folder.names <- list.files("~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Data_Ji/gastric_scRNAseq_filtered/", full.names = FALSE)
+
+# Initialization of list to store sce objects
+# Uncommand this when no other list exists
+sce.list <- list()
+sce.list.filtered <- list()
+# If other samples have already been analysed, load in list containing previous samples
+# sce.list <- readRDS("PATH/TO/FILE")
+
+# Read in the data
+for(i in 1:length(folders)){
+  # i<-1
+  title.name <- folder.names[i]
+  if(title.name %in% names(sce.list)){
+    next
+  }
+  else
+  {
+    print(i)
+    cur_sce <- read10xCounts(paste0(folders[i],"//"))
+    colData(cur_sce)$Patient <- sample_metadata[folder.names[i],"Patient"]
+    colData(cur_sce)$Tissue <- sample_metadata[folder.names[i],"Tissue"]
+    colData(cur_sce)$Batch <- "NA"
+    colData(cur_sce)$Sample_Barcode <- "NA"
+    colData(cur_sce)$Sample <- folder.names[i]
+    
+    
+    
+    MT.prop <- Matrix::colSums(counts(cur_sce)[rownames(cur_sce) %in% MT_genes$Gene.stable.ID,])/
+      Matrix::colSums(counts(cur_sce))*100
+    cur_sce <- addPerCellQC(cur_sce)
+    cur_sce <- addPerFeatureQC(cur_sce)
+    # Library size
+    print(ggplot(as.data.frame(colData(cur_sce))) + 
+            geom_point(aes(1:ncol(cur_sce), log10(total))) +
+            xlab("Cells")+ ggtitle(title.name))
+    
+    # Number of genes detected
+    print(ggplot(as.data.frame(colData(cur_sce))) + 
+            geom_point(aes(1:ncol(cur_sce), detected)) +
+            xlab("Cells")+ ggtitle(title.name))
+    
+    # Mitochondrial genes
+    print(ggplot(data.frame(MT_genes = Matrix::colSums(counts(cur_sce)[rownames(cur_sce) %in%
+                                                                         MT_genes$Gene.stable.ID,])/
+                              Matrix::colSums(counts(cur_sce)))*100) +
+            geom_point(aes(1:ncol(cur_sce), MT_genes)) + 
+            ylab("% mitochondrial reads") + xlab("Cells")+ ggtitle(title.name))
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            VIM = log10(counts(cur_sce)[rowData(cur_sce)$Symbol == "VIM",]))) + 
+            geom_point(aes(Total, MT.prop, colour = VIM)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    
+    
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            PTPRC = log10(counts(cur_sce)[rowData(cur_sce)$Symbol == "PTPRC",]))) + 
+            geom_point(aes(Total, MT.prop, colour = PTPRC)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            KRT8 = log10(counts(cur_sce)[rowData(cur_sce)$Symbol == "KRT8",]))) + 
+            geom_point(aes(Total, MT.prop, colour = KRT8)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            MUC2 = log10(counts(cur_sce)[rowData(cur_sce)$Symbol == "MUC2",]))) + 
+            geom_point(aes(Total, MT.prop, colour = MUC2)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            KRT13 = log10(counts(cur_sce)[rowData(cur_sce)$Symbol == "KRT13",]))) + 
+            geom_point(aes(Total, MT.prop, colour = KRT13)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    
+    print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            CALD1 = log10(counts(cur_sce)[rowData(cur_sce)$Symbol == "CALD1",]))) + 
+            geom_point(aes(Total, MT.prop, colour = CALD1)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+        print(ggplot(data.frame(Total = cur_sce$total,
+                            MT.prop = MT.prop,
+                            TPSB2 = log10(counts(cur_sce)[rowData(cur_sce)$Symbol == "TPSB2",]))) + 
+            geom_point(aes(Total, MT.prop, colour = TPSB2)) +
+            scale_x_log10() +
+            scale_color_viridis_c(option = "inferno") +
+            annotation_logticks(sides="b") +
+            theme_minimal() + 
+            theme_bw() +
+            xlab("Total UMI")+
+            ylab("% mitochondrial reads") +
+            ggtitle(title.name))
+    
+    sce.list[[title.name]] <- cur_sce 
+    
+    sce.list.filtered[[title.name]] <- cur_sce[, MT.prop > 0.5 &
+                                                 MT.prop < 25]
+    
+    
+  }
+}
+
+# Save list
+saveRDS(sce.list, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/All_sce_unfiltered_Ji_manual.rds")
+
+saveRDS(sce.list.filtered, "~/Dropbox/Postdoc/2021-05-19_Gastric_IM/Final/All_sce_filtered_Ji_manual.rds")
+```
+
+# End Matter
+
+To finish get session info:
+
+```{r Endnote, include=TRUE, echo=TRUE, warning=FALSE, eval=TRUE, message=FALSE, tidy=TRUE}
+sessionInfo()
+```
